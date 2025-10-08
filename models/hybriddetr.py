@@ -470,6 +470,7 @@ class SwinUNetMultiUp(nn.Module):
         
         # initialize reference boxes: content small centered, spatial as init_boxes
         init_boxes = torch.sigmoid(self.box_init(spatial_feats))  # [B, topk, 4]
+        init_boxes[...,2:]*=0.2
         content_boxes = torch.tensor([0.5, 0.5, 0.05, 0.05], device=x.device).view(1,1,4).expand(B, content_q.shape[1], 4)
         ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
 
