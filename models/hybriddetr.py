@@ -553,7 +553,7 @@ class SwinUNetMultiUp(nn.Module):
         for i in range(0, 3): #1 to 4
             if features[i].shape[1] < features[i].shape[-1]:  # channels last
                 features[i] = features[i].permute(0, 3, 1, 2).contiguous()
-        
+        print(features[0].shape,features[1].shape,features[2].shape)
         # Feature projection using Unet
         p2 = self.conv2(features[0])
         p3 = self.conv3(features[1])
