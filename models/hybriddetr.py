@@ -411,6 +411,7 @@ class SwinUNetMultiUp(nn.Module):
         self.spatial_score = nn.Linear(d_model, 1)
         self.topk_spatial = topk_spatial
         self.box_init = nn.Linear(d_model, 4)
+        nn.init.constant_(self.box_init.bias, -2.0)
 
         # Decoder stack
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model=d_model, nhead=8) for _ in range(num_decoder_layers)])
@@ -470,7 +471,7 @@ class SwinUNetMultiUp(nn.Module):
         
         # initialize reference boxes: content small centered, spatial as init_boxes
         init_boxes = torch.sigmoid(self.box_init(spatial_feats))  # [B, topk, 4]
-        init_boxes[...,2:]*=0.2
+        
         content_boxes = torch.tensor([0.5, 0.5, 0.05, 0.05], device=x.device).view(1,1,4).expand(B, content_q.shape[1], 4)
         ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
 
