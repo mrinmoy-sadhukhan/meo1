@@ -549,7 +549,7 @@ class SwinUNetMultiUp(nn.Module):
     def forward(self, x):
         # Swin features
         features = self.backbone(x)
-        print(features[2].shape,features[3].shape,features[4].shape)
+        print(features[0].shape,features[1].shape,features[2].shape)
         for i in range(2, 5): #1 to 4
             if features[i].shape[1] < features[i].shape[-1]:  # channels last
                 features[i] = features[i].permute(0, 3, 1, 2).contiguous()
