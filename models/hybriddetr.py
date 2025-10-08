@@ -640,7 +640,9 @@ class SwinUNetMultiUp(nn.Module):
         # ===== 1️⃣ Flatten encoder features =====
         B, D, H, W = out.shape
         memory = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
+        print(memory.shape)
         pos_embed = self.position_encoding(memory)
+        print(pos_embed.shape)
         memory = memory + pos_embed
         memory = self.encoder(memory)
 
