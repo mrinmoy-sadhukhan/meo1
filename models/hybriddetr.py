@@ -415,7 +415,7 @@ class SwinUNetMultiUp(nn.Module):
         self.spatial_score = nn.Linear(d_model, 1)
         self.topk_spatial = topk_spatial
         self.box_init = nn.Linear(d_model, 4)
-        self._init_box_init()
+        #self._init_box_init()
 
         # Decoder stack
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model=d_model, nhead=8) for _ in range(num_decoder_layers)])
@@ -491,24 +491,31 @@ class SwinUNetMultiUp(nn.Module):
         cx = (topk_idx % W).float() / W
         centers = torch.stack([cx, cy], dim=-1)  # [B, topk, 2]
 
-        # Initialize small width/height
-        wh = torch.full_like(centers, 0.08, device=x.device)
-        spatial_boxes = torch.cat([centers, wh], dim=-1)  # [B, topk, 4]
+        # # Initialize small width/height
+        # wh = torch.full_like(centers, 0.08, device=x.device)
+        # spatial_boxes = torch.cat([centers, wh], dim=-1)  # [B, topk, 4]
 
-        # === Optional small refinement from box_init MLP ===
-        init_delta = torch.sigmoid(self.box_init(spatial_feats)) - 0.5  # centered offset
-        spatial_boxes = (spatial_boxes + 0.1 * init_delta).clamp(0, 1)  # small local adjustment
+        # # === Optional small refinement from box_init MLP ===
+        # init_delta = torch.sigmoid(self.box_init(spatial_feats)) - 0.5  # centered offset
+        # spatial_boxes = (spatial_boxes + 0.1 * init_delta).clamp(0, 1)  # small local adjustment
 
         # === Combine content + spatial queries ===
         queries = torch.cat([content_q, spatial_feats], dim=1)  # [B, Q_total, D]
 
+        # 2. Initialize boxes around centers
+        init_boxes = torch.sigmoid(self.box_init(spatial_feats))
+        init_boxes = 0.08 * (init_boxes - 0.5) + centers
+        init_boxes[..., 2:] = init_boxes[..., 2:].clamp(0.05, 0.12)
+
+        # 3. Optional tiny jitter
+        init_boxes = init_boxes + (torch.rand_like(init_boxes) - 0.5) * 0.01
         # === Reference boxes ===
         content_boxes = torch.tensor(
             [0.5, 0.5, 0.05, 0.05],
             device=x.device
         ).view(1, 1, 4).expand(B, content_q.shape[1], 4)
 
-        ref_boxes = torch.cat([content_boxes, spatial_boxes], dim=1)  # [B, Q_total, 4]
+        ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
         # Decode with iterative refinement
         q = queries
         boxes = ref_boxes
