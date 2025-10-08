@@ -327,36 +327,79 @@ class DecoderLayer(nn.Module):
         memory: [B, N, D]  (encoder features)
         ref_boxes: [B, num_queries, 4]  (cx, cy, w, h in [0,1])
         """
-        query=objectquery
-        memory=fixedembeddings
-        # ===== 1. Self-Attention =====
-        q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
+        # query=objectquery
+        # memory=fixedembeddings
+        # # ===== 1. Self-Attention =====
+        # q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
 
-        # 2) positional encoding for reference points -> use only cx,cy
+        # # 2) positional encoding for reference points -> use only cx,cy
+        # ref_points = ref_boxes[..., :2]  # [B, Q, 2]
+        # pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
+        
+        # # ===== 2. Positional conditioning via reference boxes =====
+        # # Convert reference boxes to spatial embeddings
+        # #ref_embed = torch.sigmoid(self.ref_point_proj(ref_boxes))  # [B, Q, D]
+        # scale=0.1
+        # displacement = torch.tanh(self.displacement_ffn(q1))+scale                   # learned shift
+        # spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed) # element-wise modulation
+
+        # # ===== 3. Cross-Attention =====
+        # cross_query = q1 + spatial_query
+        # cross_out = self.cross_attn(cross_query, memory, memory)[0]
+        # q2 = self.norm2(q1 + self.dropout(cross_out))
+
+        # # ===== 4. Feedforward =====
+        # q3 = self.norm3(q2 + self.dropout(self.ffn(q2)))
+
+        # # ===== 5. Output predictions =====
+        # class_logits = self.class_head(q3)
+        # box_deltas = torch.tanh(self.box_head(q3))*0.1
+
+        # return q3, class_logits, box_deltas
+        query = objectquery
+        memory = fixedembeddings
+
+        # ===== 1️⃣ Self-Attention =====
+        # Queries interact with each other (object relations)
+        self_attn_out = self.self_attn(query, query, query)[0]
+        q1 = self.norm1(query + self.dropout(self_attn_out))
+
+        # ===== 2️⃣ Positional Encoding from Reference Boxes =====
+        # Use only (cx, cy) for position embedding
         ref_points = ref_boxes[..., :2]  # [B, Q, 2]
         pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
-        
-        # ===== 2. Positional conditioning via reference boxes =====
-        # Convert reference boxes to spatial embeddings
-        #ref_embed = torch.sigmoid(self.ref_point_proj(ref_boxes))  # [B, Q, D]
-        scale=0.1
-        displacement = torch.tanh(self.displacement_ffn(q1))+scale                   # learned shift
-        spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed) # element-wise modulation
 
-        # ===== 3. Cross-Attention =====
+        # ===== 3️⃣ Learnable Spatial Modulation =====
+        # Apply displacement based on query content
+        # Use multiplicative form to keep updates stable (~1× mean)
+        scale = 0.1
+        displacement = 1 + scale * torch.tanh(self.displacement_ffn(q1))  # [B, Q, D]
+        spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed)
+
+        # ===== 4️⃣ Cross-Attention with Encoder Features =====
+        # Inject geometric prior into query before cross-attention
         cross_query = q1 + spatial_query
         cross_out = self.cross_attn(cross_query, memory, memory)[0]
         q2 = self.norm2(q1 + self.dropout(cross_out))
 
-        # ===== 4. Feedforward =====
-        q3 = self.norm3(q2 + self.dropout(self.ffn(q2)))
+        # ===== 5️⃣ Feed-Forward Network =====
+        ffn_out = self.ffn(q2)
+        q3 = self.norm3(q2 + self.dropout(ffn_out))
 
-        # ===== 5. Output predictions =====
-        class_logits = self.class_head(q3)
-        box_deltas = torch.tanh(self.box_head(q3))*0.1
+        # ===== 6️⃣ Prediction Heads =====
+        # Classification head (logits)
+        class_logits = self.class_head(q3)  # [B, Q, num_classes]
 
-        return q3, class_logits, box_deltas
+        # Bounding box delta prediction
+        box_deltas = torch.tanh(self.box_head(q3)) * 0.1  # small offset
 
+        # ===== 7️⃣ Bounding Box Refinement =====
+        # Use inverse-sigmoid trick for numerically stable refinement
+        updated_boxes = torch.sigmoid(
+            inverse_sigmoid(ref_boxes) + box_deltas
+        )
+
+        return q3, class_logits, updated_boxes
 class SwinUNetMultiUp(nn.Module):
     def __init__(self, swin_model_name="swin_large_patch4_window12_384",num_queries=200, topk_spatial=100,pos_type="normal", num_decoder_layers=3, pretrained=True, d_model=256):
         super().__init__()
@@ -408,8 +451,11 @@ class SwinUNetMultiUp(nn.Module):
 
         # Final fusion of upsampled features
         self.fusion_proj = ConvBNReLU(3 * d_model, d_model)
-        self.encoder = TransformerEncoder(d_model=d_model, nhead=8)
-
+        #self.encoder = TransformerEncoder(d_model=d_model, nhead=8)
+        self.encoder = nn.TransformerEncoder(
+        encoder_layer=nn.TransformerEncoderLayer(d_model=d_model, nhead=8, dim_feedforward=1024),
+        num_layers=6,   # default
+        )
         # Query generation (content + spatial top-k)
         self.num_content_queries = num_queries
         self.content_queries = nn.Parameter(torch.randn(num_queries, d_model))
@@ -460,68 +506,116 @@ class SwinUNetMultiUp(nn.Module):
         # Final projection
         out = self.fusion_proj(cat)
         
-        # Flatten for transformer input
+        # # Flatten for transformer input
+        # B, D, H, W = out.shape
+        # memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
+        # # Positional embedding
+        # pos_embed = self.position_encoding(memory)
+        # memory = memory + pos_embed
+        # memory=self.encoder(memory)
+
+        # # Query generation: content + spatial
+        # # content queries
+        # content_q = self.content_queries.unsqueeze(0).expand(B, -1, -1)  # [B, Qc, D]
+        # # compute spatial scores on memory
+        # scores = self.spatial_score(memory).squeeze(-1)  # [B, N]
+        # topk = min(self.topk_spatial, scores.shape[1])
+        # topk_vals, topk_idx = torch.topk(scores, k=topk, dim=1)
+        # batch_idx = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, topk)
+        # spatial_feats = memory[batch_idx, topk_idx]  # [B, topk, D]
+        # spatial_q = spatial_feats  # optionally project
+        # # Combine queries
+        # queries = torch.cat([content_q, spatial_q], dim=1)  # [B, Q_total, D]
+        
+        # # initialize reference boxes: content small centered, spatial as init_boxes
+        # #init_boxes = torch.sigmoid(self.box_init(spatial_feats))  # [B, topk, 4]
+        # #content_boxes = torch.tensor([0.5, 0.5, 0.05, 0.05], device=x.device).view(1,1,4).expand(B, content_q.shape[1], 4)
+        # #ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
+
+        # # Compute (cx, cy) from topk_idx grid positions
+        # # assume memory is flatten(H, W)
+        # cy = (topk_idx // W).float() / H
+        # cx = (topk_idx % W).float() / W
+        # centers = torch.stack([cx, cy], dim=-1)  # [B, topk, 2]
+
+        # # # Initialize small width/height
+        # # wh = torch.full_like(centers, 0.08, device=x.device)
+        # # spatial_boxes = torch.cat([centers, wh], dim=-1)  # [B, topk, 4]
+
+        # # # === Optional small refinement from box_init MLP ===
+        # # init_delta = torch.sigmoid(self.box_init(spatial_feats)) - 0.5  # centered offset
+        # # spatial_boxes = (spatial_boxes + 0.1 * init_delta).clamp(0, 1)  # small local adjustment
+
+        # # === Combine content + spatial queries ===
+        # #queries = torch.cat([content_q, spatial_feats], dim=1)  # [B, Q_total, D]
+
+        # # 2. Initialize boxes around centers
+        # init_boxes = torch.sigmoid(self.box_init(spatial_feats))
+        # # Add centers to first 2 dims only
+        # new_centers = 0.08 * (init_boxes[..., :2] - 0.5) + centers
+
+        # # Scale w,h separately (keep small)
+        # new_wh = 0.05 + 0.07 * init_boxes[..., 2:]  # maps sigmoid output to [0.05, 0.12]
+        # # Concatenate to create new init_boxes (out-of-place)
+        # init_boxes = torch.cat([new_centers, new_wh], dim=-1)
+        # # 3. Optional tiny jitter
+        # init_boxes = init_boxes + (torch.rand_like(init_boxes) - 0.5) * 0.01
+        # # === Reference boxes ===
+        # content_boxes = torch.tensor(
+        #     [0.5, 0.5, 0.05, 0.05],
+        #     device=x.device
+        # ).view(1, 1, 4).expand(B, content_q.shape[1], 4)
+
+        # ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
+        # Decode with iterative refinement
+        # ===== 1️⃣ Flatten encoder features =====
         B, D, H, W = out.shape
-        memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
-        # Positional embedding
+        memory = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
         pos_embed = self.position_encoding(memory)
         memory = memory + pos_embed
-        memory=self.encoder(memory)
+        memory = self.encoder(memory)
 
-        # Query generation: content + spatial
-        # content queries
-        content_q = self.content_queries.unsqueeze(0).expand(B, -1, -1)  # [B, Qc, D]
-        # compute spatial scores on memory
-        scores = self.spatial_score(memory).squeeze(-1)  # [B, N]
+        # ===== 2️⃣ Query generation =====
+        # Content queries (learned embeddings)
+        content_q = self.content_queries.unsqueeze(0).expand(B, -1, -1)   # [B, Qc, D]
+
+        # Spatial queries: select top-k informative regions
+        scores = self.spatial_score(memory).squeeze(-1)                   # [B, N]
         topk = min(self.topk_spatial, scores.shape[1])
         topk_vals, topk_idx = torch.topk(scores, k=topk, dim=1)
-        batch_idx = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, topk)
-        spatial_feats = memory[batch_idx, topk_idx]  # [B, topk, D]
-        spatial_q = spatial_feats  # optionally project
-        # Combine queries
-        queries = torch.cat([content_q, spatial_q], dim=1)  # [B, Q_total, D]
-        
-        # initialize reference boxes: content small centered, spatial as init_boxes
-        #init_boxes = torch.sigmoid(self.box_init(spatial_feats))  # [B, topk, 4]
-        #content_boxes = torch.tensor([0.5, 0.5, 0.05, 0.05], device=x.device).view(1,1,4).expand(B, content_q.shape[1], 4)
-        #ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
+        batch_idx = torch.arange(B, device=out.device).unsqueeze(1).expand(-1, topk)
+        spatial_feats = memory[batch_idx, topk_idx]                       # [B, topk, D]
+        spatial_q = spatial_feats                                         # [B, topk, D]
 
-        # Compute (cx, cy) from topk_idx grid positions
-        # assume memory is flatten(H, W)
+        # ===== 3️⃣ Combine content + spatial queries =====
+        queries = torch.cat([content_q, spatial_q], dim=1)                # [B, Q_total, D]
+
+        # ===== 4️⃣ Reference box initialization =====
+        # Compute (cx, cy) from grid indices
         cy = (topk_idx // W).float() / H
-        cx = (topk_idx % W).float() / W
-        centers = torch.stack([cx, cy], dim=-1)  # [B, topk, 2]
+        cx = (topk_idx %  W).float() / W
+        centers = torch.stack([cx, cy], dim=-1)                           # [B, topk, 2]
 
-        # # Initialize small width/height
-        # wh = torch.full_like(centers, 0.08, device=x.device)
-        # spatial_boxes = torch.cat([centers, wh], dim=-1)  # [B, topk, 4]
+        # Initial width/height mapping — keep small and positive
+        # Range roughly [0.02, 0.05] for stability
+        init_raw = torch.sigmoid(self.box_init(spatial_feats))            # [B, topk, 4]
+        new_centers = centers + 0.02 * (init_raw[..., :2] - 0.5)          # small local shift
+        new_centers = new_centers.clamp(0.01, 0.99)                       # keep valid range
+        new_wh = 0.02 + 0.03 * init_raw[..., 2:]                          # [0.02, 0.05]
+        init_boxes = torch.cat([new_centers, new_wh], dim=-1)             # [B, topk, 4]
 
-        # # === Optional small refinement from box_init MLP ===
-        # init_delta = torch.sigmoid(self.box_init(spatial_feats)) - 0.5  # centered offset
-        # spatial_boxes = (spatial_boxes + 0.1 * init_delta).clamp(0, 1)  # small local adjustment
+        # Small Gaussian jitter (only after first 2 epochs, if you track epoch)
+        if hasattr(self, "current_epoch") and self.current_epoch > 2:
+            noise = 0.005 * torch.randn_like(init_boxes)
+            init_boxes = (init_boxes + noise).clamp(0.0, 1.0)
 
-        # === Combine content + spatial queries ===
-        #queries = torch.cat([content_q, spatial_feats], dim=1)  # [B, Q_total, D]
-
-        # 2. Initialize boxes around centers
-        init_boxes = torch.sigmoid(self.box_init(spatial_feats))
-        # Add centers to first 2 dims only
-        new_centers = 0.08 * (init_boxes[..., :2] - 0.5) + centers
-
-        # Scale w,h separately (keep small)
-        new_wh = 0.05 + 0.07 * init_boxes[..., 2:]  # maps sigmoid output to [0.05, 0.12]
-        # Concatenate to create new init_boxes (out-of-place)
-        init_boxes = torch.cat([new_centers, new_wh], dim=-1)
-        # 3. Optional tiny jitter
-        init_boxes = init_boxes + (torch.rand_like(init_boxes) - 0.5) * 0.01
-        # === Reference boxes ===
+        # ===== 5️⃣ Content query reference boxes (centered small) =====
         content_boxes = torch.tensor(
-            [0.5, 0.5, 0.05, 0.05],
-            device=x.device
+            [0.5, 0.5, 0.03, 0.03], device=out.device
         ).view(1, 1, 4).expand(B, content_q.shape[1], 4)
 
-        ref_boxes = torch.cat([content_boxes, init_boxes], dim=1)  # [B, Q_total, 4]
-        # Decode with iterative refinement
+        # ===== 6️⃣ Final reference boxes =====
+        ref_boxes = torch.cat([content_boxes, init_boxes], dim=1).clamp(0.0, 1.0)  # [B, Q_total, 4]
         q = queries
         boxes = ref_boxes
         #print(q.shape)
