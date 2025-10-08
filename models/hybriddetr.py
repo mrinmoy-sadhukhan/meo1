@@ -505,11 +505,12 @@ class SwinUNetMultiUp(nn.Module):
         # 2. Initialize boxes around centers
         init_boxes = torch.sigmoid(self.box_init(spatial_feats))
         # Add centers to first 2 dims only
-        init_boxes[..., :2] = 0.08 * (init_boxes[..., :2] - 0.5) + centers
+        new_centers = 0.08 * (init_boxes[..., :2] - 0.5) + centers
 
         # Scale w,h separately (keep small)
-        init_boxes[..., 2:] = 0.05 + 0.07 * init_boxes[..., 2:]  # maps sigmoid output to [0.05, 0.12]
-
+        new_wh = 0.05 + 0.07 * init_boxes[..., 2:]  # maps sigmoid output to [0.05, 0.12]
+        # Concatenate to create new init_boxes (out-of-place)
+        init_boxes = torch.cat([new_centers, new_wh], dim=-1)
         # 3. Optional tiny jitter
         init_boxes = init_boxes + (torch.rand_like(init_boxes) - 0.5) * 0.01
         # === Reference boxes ===
