@@ -574,7 +574,7 @@ class SwinUNetMultiUp(nn.Module):
         cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W]
         # Final projection
         out = self.fusion_proj(cat)
-        
+        print(out.shape)
         # # Flatten for transformer input
         # B, D, H, W = out.shape
         # memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
@@ -640,9 +640,9 @@ class SwinUNetMultiUp(nn.Module):
         # ===== 1️⃣ Flatten encoder features =====
         B, D, H, W = out.shape
         memory = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
-        print(memory.shape)
+        #print(memory.shape)
         pos_embed = self.position_encoding(memory)
-        print(pos_embed.shape)
+        #print(pos_embed.shape)
         memory = memory + pos_embed
         memory = self.encoder(memory)
 
