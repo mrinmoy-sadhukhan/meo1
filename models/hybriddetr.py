@@ -474,11 +474,11 @@ class SwinUNetMultiUp(nn.Module):
         super().__init__()
         #self.backbone = timm.create_model(swin_model_name,pretrained=pretrained,features_only=True)
         self.backbone = timm.create_model(
-               "vit_base_patch14_dinov2.lvd142m",
+                "resnet50",
                 pretrained=True,
-                features_only=True,
-                dynamic_img_size=True,
-                out_indices=(1, 2, 3)
+                features_only=True,      # only output feature maps
+                out_indices=(0, 1, 2),   # choose which layers to extract
+                global_pool=""           # disable global pooling
                 )
         # --- Positional Encoding ---
         if pos_type == "sine":
@@ -549,7 +549,7 @@ class SwinUNetMultiUp(nn.Module):
     def forward(self, x):
         # Swin features
         features = self.backbone(x)
-        #print(features[0].shape,features[1].shape,features[2].shape)
+        print(features[0].shape,features[1].shape,features[2].shape)
         for i in range(0, 3): #1 to 4
             if features[i].shape[1] < features[i].shape[-1]:  # channels last
                 features[i] = features[i].permute(0, 3, 1, 2).contiguous()
@@ -574,7 +574,7 @@ class SwinUNetMultiUp(nn.Module):
         cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W]
         # Final projection
         out = self.fusion_proj(cat)
-        print(out.shape)
+        #print(out.shape)
         # # Flatten for transformer input
         # B, D, H, W = out.shape
         # memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
