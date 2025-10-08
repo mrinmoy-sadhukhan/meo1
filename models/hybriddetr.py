@@ -321,14 +321,14 @@ class DecoderLayer(nn.Module):
             pos = F.pad(pos, (0, pad), value=0.0)
         return pos
 
-    def forward(self, objectquery, embeddings, ref_boxes):
+    def forward(self, objectquery, fixedembeddings, ref_boxes):
         """
         query: [B, num_queries, D]
         memory: [B, N, D]  (encoder features)
         ref_boxes: [B, num_queries, 4]  (cx, cy, w, h in [0,1])
         """
         query=objectquery
-        memory=embeddings
+        memory=fixedembeddings
         # ===== 1. Self-Attention =====
         q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
 
@@ -529,8 +529,8 @@ class SwinUNetMultiUp(nn.Module):
         all_logits = []
         all_boxes = []
         for layer in self.decoder_layers:
-            q, logits, deltas = layer(q, memory, boxes)
-            boxes = (inverse_sigmoid(boxes) + deltas).sigmoid()
+            q, logits, boxes = layer(q, memory, boxes)
+            #boxes = (inverse_sigmoid(boxes) + deltas).sigmoid()
             all_logits.append(logits)
             all_boxes.append(boxes)
         
