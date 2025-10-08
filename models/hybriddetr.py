@@ -536,6 +536,9 @@ class SwinUNetMultiUp(nn.Module):
         # Decoder stack
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model=d_model, nhead=8) for _ in range(num_decoder_layers)])
 
+        self.pe_encoder = nn.Parameter(
+            torch.rand((1, 225, d_model)), requires_grad=True
+        )
         # box refinement projection (optional)
         self.refine_proj = nn.Linear(d_model, 4) 
         self.reid_head = ReIDWithSlotAttention(num_classes=1000, slot_dim=256, num_slots=6)
@@ -574,7 +577,7 @@ class SwinUNetMultiUp(nn.Module):
         cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W]
         # Final projection
         out = self.fusion_proj(cat)
-        #print(out.shape)
+        print(out.shape)
         # # Flatten for transformer input
         # B, D, H, W = out.shape
         # memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
@@ -640,10 +643,10 @@ class SwinUNetMultiUp(nn.Module):
         # ===== 1️⃣ Flatten encoder features =====
         B, D, H, W = out.shape
         memory = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
-        #print(memory.shape)
-        pos_embed = self.position_encoding(memory)
+        print(memory.shape)
+        #pos_embed = self.position_encoding(memory)
         #print(pos_embed.shape)
-        memory = memory + pos_embed
+        memory = memory + self.pe_encoder
         memory = self.encoder(memory)
 
         # ===== 2️⃣ Query generation =====
