@@ -555,9 +555,9 @@ class SwinUNetMultiUp(nn.Module):
                 features[i] = features[i].permute(0, 3, 1, 2).contiguous()
         
         # Feature projection using Unet
-        p2 = self.conv2(features[2])
-        p3 = self.conv3(features[3])
-        p4 = self.conv4(features[4])
+        p2 = self.conv2(features[0])
+        p3 = self.conv3(features[1])
+        p4 = self.conv4(features[2])
         # Down path
         d2 = p2
         d3 = self.down3(d2, p3)
