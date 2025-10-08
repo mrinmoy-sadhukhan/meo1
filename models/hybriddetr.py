@@ -321,13 +321,14 @@ class DecoderLayer(nn.Module):
             pos = F.pad(pos, (0, pad), value=0.0)
         return pos
 
-    def forward(self, query, memory, ref_boxes):
+    def forward(self, objectquery, embeddings, ref_boxes):
         """
         query: [B, num_queries, D]
         memory: [B, N, D]  (encoder features)
         ref_boxes: [B, num_queries, 4]  (cx, cy, w, h in [0,1])
         """
-
+        query=objectquery
+        memory=embeddings
         # ===== 1. Self-Attention =====
         q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
 
@@ -338,8 +339,8 @@ class DecoderLayer(nn.Module):
         # ===== 2. Positional conditioning via reference boxes =====
         # Convert reference boxes to spatial embeddings
         #ref_embed = torch.sigmoid(self.ref_point_proj(ref_boxes))  # [B, Q, D]
-        
-        displacement = self.displacement_ffn(q1)                   # learned shift
+        scale=0.1
+        displacement = torch.tanh(self.displacement_ffn(q1))+scale                   # learned shift
         spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed) # element-wise modulation
 
         # ===== 3. Cross-Attention =====
@@ -352,7 +353,7 @@ class DecoderLayer(nn.Module):
 
         # ===== 5. Output predictions =====
         class_logits = self.class_head(q3)
-        box_deltas = self.box_head(q3)
+        box_deltas = torch.tanh(self.box_head(q3))*0.1
 
         return q3, class_logits, box_deltas
 
@@ -500,7 +501,7 @@ class SwinUNetMultiUp(nn.Module):
         # spatial_boxes = (spatial_boxes + 0.1 * init_delta).clamp(0, 1)  # small local adjustment
 
         # === Combine content + spatial queries ===
-        queries = torch.cat([content_q, spatial_feats], dim=1)  # [B, Q_total, D]
+        #queries = torch.cat([content_q, spatial_feats], dim=1)  # [B, Q_total, D]
 
         # 2. Initialize boxes around centers
         init_boxes = torch.sigmoid(self.box_init(spatial_feats))
