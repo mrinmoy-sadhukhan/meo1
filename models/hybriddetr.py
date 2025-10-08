@@ -264,144 +264,213 @@ class TransformerEncoder(nn.Module):
 # -------------------------
 # Decoder Layer (self-attn + cross-attn placeholder for deformable)
 # -------------------------
-class DecoderLayer(nn.Module):
-    def __init__(self, d_model=256, nhead=8):
-        super().__init__()
-        self.d_model = d_model
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, batch_first=True) ##deformable block
-        # cross-attention placeholder (use deformable attention here in production)
-        self.cross_attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.ReLU(inplace=True),
-            nn.Linear(d_model * 4, d_model)
-        )
-        self.norm3 = nn.LayerNorm(d_model)
-        self.class_head = nn.Linear(d_model, 1+1)  # one person class (logit)
-        self.box_head = nn.Sequential(nn.Linear(d_model, d_model), nn.ReLU(), nn.Linear(d_model, 4))
-        self.dropout = nn.Dropout(0.1)
+# class DecoderLayer(nn.Module):
+#     def __init__(self, d_model=256, nhead=8):
+#         super().__init__()
+#         self.d_model = d_model
+#         self.self_attn = nn.MultiheadAttention(d_model, nhead, batch_first=True) ##deformable block
+#         # cross-attention placeholder (use deformable attention here in production)
+#         self.cross_attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
+#         self.norm1 = nn.LayerNorm(d_model)
+#         self.norm2 = nn.LayerNorm(d_model)
+#         self.ffn = nn.Sequential(
+#             nn.Linear(d_model, d_model * 4),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(d_model * 4, d_model)
+#         )
+#         self.norm3 = nn.LayerNorm(d_model)
+#         self.class_head = nn.Linear(d_model, 1+1)  # one person class (logit)
+#         self.box_head = nn.Sequential(nn.Linear(d_model, d_model), nn.ReLU(), nn.Linear(d_model, 4))
+#         self.dropout = nn.Dropout(0.1)
 
-        # --- Spatial conditioning ---
-        #self.ref_point_proj = nn.Linear(4, d_model)   # encode (cx, cy, w, h)
-        self.displacement_ffn = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.ReLU(inplace=True),
-            nn.Linear(d_model, d_model)
-        )
-        self.lambda_q = nn.Parameter(torch.ones(d_model))  # learnable scaling per channel
+#         # --- Spatial conditioning ---
+#         #self.ref_point_proj = nn.Linear(4, d_model)   # encode (cx, cy, w, h)
+#         self.displacement_ffn = nn.Sequential(
+#             nn.Linear(d_model, d_model),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(d_model, d_model)
+#         )
+#         self.lambda_q = nn.Parameter(torch.ones(d_model))  # learnable scaling per channel
     
-    def positional_encoding_ref(self, ref_points):
-        """
-        ref_points: [B, Q, 2] with values in [0,1] (cx, cy)
-        returns: [B, Q, d_model] positional encoding
-        """
-        # use the same pattern as DETR: half dims per axis
-        batch, qn, _ = ref_points.shape
-        device = ref_points.device
-        half_dim = self.d_model // 2
-        # create dim_t
-        dim_t = torch.arange(half_dim, dtype=torch.float32, device=device)
-        dim_t = 10000 ** (2 * (dim_t // 2) / float(half_dim))
+#     def positional_encoding_ref(self, ref_points):
+#         """
+#         ref_points: [B, Q, 2] with values in [0,1] (cx, cy)
+#         returns: [B, Q, d_model] positional encoding
+#         """
+#         # use the same pattern as DETR: half dims per axis
+#         batch, qn, _ = ref_points.shape
+#         device = ref_points.device
+#         half_dim = self.d_model // 2
+#         # create dim_t
+#         dim_t = torch.arange(half_dim, dtype=torch.float32, device=device)
+#         dim_t = 10000 ** (2 * (dim_t // 2) / float(half_dim))
 
-        # normalize just in case
-        ref = torch.sigmoid(ref_points)  # [B, Q, 2]
-        px = ref[..., 0].unsqueeze(-1) / dim_t  # [B, Q, half_dim]
-        py = ref[..., 1].unsqueeze(-1) / dim_t  # [B, Q, half_dim]
+#         # normalize just in case
+#         ref = torch.sigmoid(ref_points)  # [B, Q, 2]
+#         px = ref[..., 0].unsqueeze(-1) / dim_t  # [B, Q, half_dim]
+#         py = ref[..., 1].unsqueeze(-1) / dim_t  # [B, Q, half_dim]
 
-        # interleave sin/cos
-        sx = torch.stack((px[..., 0::2].sin(), px[..., 1::2].cos()), dim=-1).flatten(-2)
-        sy = torch.stack((py[..., 0::2].sin(), py[..., 1::2].cos()), dim=-1).flatten(-2)
+#         # interleave sin/cos
+#         sx = torch.stack((px[..., 0::2].sin(), px[..., 1::2].cos()), dim=-1).flatten(-2)
+#         sy = torch.stack((py[..., 0::2].sin(), py[..., 1::2].cos()), dim=-1).flatten(-2)
 
-        pos = torch.cat([sx, sy], dim=-1)  # [B, Q, d_model] (if d_model even)
-        # if d_model is odd, pad
-        if pos.shape[-1] != self.d_model:
-            pad = self.d_model - pos.shape[-1]
-            pos = F.pad(pos, (0, pad), value=0.0)
-        return pos
+#         pos = torch.cat([sx, sy], dim=-1)  # [B, Q, d_model] (if d_model even)
+#         # if d_model is odd, pad
+#         if pos.shape[-1] != self.d_model:
+#             pad = self.d_model - pos.shape[-1]
+#             pos = F.pad(pos, (0, pad), value=0.0)
+#         return pos
 
-    def forward(self, objectquery, fixedembeddings, ref_boxes):
-        """
-        query: [B, num_queries, D]
-        memory: [B, N, D]  (encoder features)
-        ref_boxes: [B, num_queries, 4]  (cx, cy, w, h in [0,1])
-        """
-        # query=objectquery
-        # memory=fixedembeddings
-        # # ===== 1. Self-Attention =====
-        # q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
+#     def forward(self, objectquery, fixedembeddings, ref_boxes):
+#         """
+#         query: [B, num_queries, D]
+#         memory: [B, N, D]  (encoder features)
+#         ref_boxes: [B, num_queries, 4]  (cx, cy, w, h in [0,1])
+#         """
+#         # query=objectquery
+#         # memory=fixedembeddings
+#         # # ===== 1. Self-Attention =====
+#         # q1 = self.norm1(query + self.dropout(self.self_attn(query, query, query)[0]))
 
-        # # 2) positional encoding for reference points -> use only cx,cy
-        # ref_points = ref_boxes[..., :2]  # [B, Q, 2]
-        # pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
+#         # # 2) positional encoding for reference points -> use only cx,cy
+#         # ref_points = ref_boxes[..., :2]  # [B, Q, 2]
+#         # pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
         
-        # # ===== 2. Positional conditioning via reference boxes =====
-        # # Convert reference boxes to spatial embeddings
-        # #ref_embed = torch.sigmoid(self.ref_point_proj(ref_boxes))  # [B, Q, D]
-        # scale=0.1
-        # displacement = torch.tanh(self.displacement_ffn(q1))+scale                   # learned shift
-        # spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed) # element-wise modulation
+#         # # ===== 2. Positional conditioning via reference boxes =====
+#         # # Convert reference boxes to spatial embeddings
+#         # #ref_embed = torch.sigmoid(self.ref_point_proj(ref_boxes))  # [B, Q, D]
+#         # scale=0.1
+#         # displacement = torch.tanh(self.displacement_ffn(q1))+scale                   # learned shift
+#         # spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed) # element-wise modulation
 
-        # # ===== 3. Cross-Attention =====
-        # cross_query = q1 + spatial_query
-        # cross_out = self.cross_attn(cross_query, memory, memory)[0]
-        # q2 = self.norm2(q1 + self.dropout(cross_out))
+#         # # ===== 3. Cross-Attention =====
+#         # cross_query = q1 + spatial_query
+#         # cross_out = self.cross_attn(cross_query, memory, memory)[0]
+#         # q2 = self.norm2(q1 + self.dropout(cross_out))
 
-        # # ===== 4. Feedforward =====
-        # q3 = self.norm3(q2 + self.dropout(self.ffn(q2)))
+#         # # ===== 4. Feedforward =====
+#         # q3 = self.norm3(q2 + self.dropout(self.ffn(q2)))
 
-        # # ===== 5. Output predictions =====
-        # class_logits = self.class_head(q3)
-        # box_deltas = torch.tanh(self.box_head(q3))*0.1
+#         # # ===== 5. Output predictions =====
+#         # class_logits = self.class_head(q3)
+#         # box_deltas = torch.tanh(self.box_head(q3))*0.1
 
-        # return q3, class_logits, box_deltas
-        query = objectquery
-        memory = fixedembeddings
+#         # return q3, class_logits, box_deltas
+#         query = objectquery
+#         memory = fixedembeddings
 
-        # ===== 1️⃣ Self-Attention =====
-        # Queries interact with each other (object relations)
-        self_attn_out = self.self_attn(query, query, query)[0]
-        q1 = self.norm1(query + self.dropout(self_attn_out))
+#         # ===== 1️⃣ Self-Attention =====
+#         # Queries interact with each other (object relations)
+#         self_attn_out = self.self_attn(query, query, query)[0]
+#         q1 = self.norm1(query + self.dropout(self_attn_out))
 
-        # ===== 2️⃣ Positional Encoding from Reference Boxes =====
-        # Use only (cx, cy) for position embedding
-        ref_points = ref_boxes[..., :2]  # [B, Q, 2]
-        pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
+#         # ===== 2️⃣ Positional Encoding from Reference Boxes =====
+#         # Use only (cx, cy) for position embedding
+#         ref_points = ref_boxes[..., :2]  # [B, Q, 2]
+#         pos_embed = self.positional_encoding_ref(ref_points)  # [B, Q, D]
 
-        # ===== 3️⃣ Learnable Spatial Modulation =====
-        # Apply displacement based on query content
-        # Use multiplicative form to keep updates stable (~1× mean)
-        scale = 0.1
-        displacement = 1 + scale * torch.tanh(self.displacement_ffn(q1))  # [B, Q, D]
-        spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed)
+#         # ===== 3️⃣ Learnable Spatial Modulation =====
+#         # Apply displacement based on query content
+#         # Use multiplicative form to keep updates stable (~1× mean)
+#         scale = 0.1
+#         displacement = 1 + scale * torch.tanh(self.displacement_ffn(q1))  # [B, Q, D]
+#         spatial_query = displacement * (self.lambda_q.view(1, 1, -1) * pos_embed)
 
-        # ===== 4️⃣ Cross-Attention with Encoder Features =====
-        # Inject geometric prior into query before cross-attention
-        cross_query = q1 + spatial_query
-        cross_out = self.cross_attn(cross_query, memory, memory)[0]
-        q2 = self.norm2(q1 + self.dropout(cross_out))
+#         # ===== 4️⃣ Cross-Attention with Encoder Features =====
+#         # Inject geometric prior into query before cross-attention
+#         cross_query = q1 + spatial_query
+#         cross_out = self.cross_attn(cross_query, memory, memory)[0]
+#         q2 = self.norm2(q1 + self.dropout(cross_out))
 
-        # ===== 5️⃣ Feed-Forward Network =====
-        ffn_out = self.ffn(q2)
-        q3 = self.norm3(q2 + self.dropout(ffn_out))
+#         # ===== 5️⃣ Feed-Forward Network =====
+#         ffn_out = self.ffn(q2)
+#         q3 = self.norm3(q2 + self.dropout(ffn_out))
 
-        # ===== 6️⃣ Prediction Heads =====
-        # Classification head (logits)
-        class_logits = self.class_head(q3)  # [B, Q, num_classes]
+#         # ===== 6️⃣ Prediction Heads =====
+#         # Classification head (logits)
+#         class_logits = self.class_head(q3)  # [B, Q, num_classes]
 
-        # Bounding box delta prediction
-        box_deltas = torch.tanh(self.box_head(q3)) * 0.1  # small offset
+#         # Bounding box delta prediction
+#         box_deltas = torch.tanh(self.box_head(q3)) * 0.1  # small offset
 
-        # ===== 7️⃣ Bounding Box Refinement =====
-        # Use inverse-sigmoid trick for numerically stable refinement
-        updated_boxes = torch.sigmoid(
-            inverse_sigmoid(ref_boxes) + box_deltas
-        )
+#         # ===== 7️⃣ Bounding Box Refinement =====
+#         # Use inverse-sigmoid trick for numerically stable refinement
+#         updated_boxes = torch.sigmoid(
+#             inverse_sigmoid(ref_boxes) + box_deltas
+#         )
 
-        return q3, class_logits, updated_boxes
+#         return q3, class_logits, updated_boxes
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class DecoderLayer(nn.Module):
+    def __init__(self, d_model=256, nhead=8, dim_feedforward=1024, dropout=0.1):
+        super().__init__()
+        # 1️⃣ Self-Attention
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+
+        # 2️⃣ Cross-Attention (queries → encoder memory)
+        self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # 3️⃣ Feedforward
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.dropout3 = nn.Dropout(dropout)
+
+        # 4️⃣ Prediction heads
+        self.class_head = nn.Linear(d_model, 91)    # 91 = COCO classes (modify)
+        self.bbox_head = nn.Linear(d_model, 4)
+
+        # Reference box modulator
+        self.ref_proj = nn.Linear(4, d_model)
+        self.scale = nn.Parameter(torch.ones(1))
+
+    def forward(self, query, memory, ref_boxes):
+        """
+        query:      [B, Q, D]
+        memory:     [B, N, D]
+        ref_boxes:  [B, Q, 4]   (cx, cy, w, h normalized)
+        """
+        B, Q, D = query.shape
+
+        # ===== 1️⃣ Self-attention (content refinement) =====
+        q = query.transpose(0, 1)  # [Q, B, D]
+        q2 = self.self_attn(q, q, q)[0].transpose(0, 1)
+        query = self.norm1(query + self.dropout1(q2))
+
+        # ===== 2️⃣ Positional conditioning from ref_boxes =====
+        pos_embed = self.ref_proj(ref_boxes) * self.scale
+        q_cross = query + pos_embed
+
+        # ===== 3️⃣ Cross-attention (query attends to memory) =====
+        q_ = q_cross.transpose(0, 1)
+        k_ = memory.transpose(0, 1)
+        cross_out = self.cross_attn(q_, k_, k_)[0].transpose(0, 1)
+        query = self.norm2(query + self.dropout2(cross_out))
+
+        # ===== 4️⃣ Feedforward network =====
+        ff = self.linear2(F.relu(self.linear1(query)))
+        query = self.norm3(query + self.dropout3(ff))
+
+        # ===== 5️⃣ Prediction =====
+        cls_logits = self.class_head(query)
+        box_deltas = torch.tanh(self.bbox_head(query)) * 0.05  # bounded update
+
+        # ===== 6️⃣ Update reference boxes =====
+        updated_boxes = ref_boxes.clone()
+        updated_boxes[..., :2] = (ref_boxes[..., :2] + box_deltas[..., :2]).clamp(0, 1)
+        updated_boxes[..., 2:] = (ref_boxes[..., 2:] * torch.exp(box_deltas[..., 2:])).clamp(1e-3, 1.0)
+
+        return query, cls_logits, updated_boxes
+
 class SwinUNetMultiUp(nn.Module):
-    def __init__(self, swin_model_name="swin_large_patch4_window12_384",num_queries=200, topk_spatial=100,pos_type="normal", num_decoder_layers=3, pretrained=True, d_model=256):
+    def __init__(self, swin_model_name="swin_large_patch4_window12_384",num_queries=200, topk_spatial=100,pos_type="normal", num_decoder_layers=6, pretrained=True, d_model=256):
         super().__init__()
         #self.backbone = timm.create_model(swin_model_name,pretrained=pretrained,features_only=True)
         self.backbone = timm.create_model(
