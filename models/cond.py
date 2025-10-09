@@ -57,7 +57,7 @@ class ConditionalDETR(nn.Module):
 
     def forward(self, x):
         tokens = self.backbone(x)["layer4"]
-        print(tokens.shape)
+        #print(tokens.shape)
         tokens = self.conv1x1(tokens)
         tokens = rearrange(tokens, "b c h w -> b (h w) c")
         B,N,D = tokens.shape
