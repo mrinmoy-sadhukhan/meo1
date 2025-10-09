@@ -211,32 +211,56 @@ class ConvBNReLU(nn.Module):
         return self.act(self.bn(self.conv(x)))
 
 class DownBlock(nn.Module):
-    """Concat previous downsampled feature + current feature, then downsample"""
+    """Concat doubled previous downsampled feature + current feature, then downsample"""
     def __init__(self, prev_ch, curr_ch, out_ch):
         super().__init__()
         self.block = nn.Sequential(
-            ConvBNReLU(prev_ch + curr_ch, out_ch, stride=1),  # downsample + process
+            ConvBNReLU(prev_ch + curr_ch, out_ch, stride=1),
             ConvBNReLU(out_ch, out_ch)
         )
-    
+
     def forward(self, prev_down, curr):
-        prev_down_ds = F.interpolate(prev_down, size=curr.shape[-2:], mode='bilinear', align_corners=False)
-        x = torch.cat([prev_down_ds, curr], dim=1)
+        # ✅ Double the previous downsampled feature (spatially upsample by 2×)
+        prev_down_up = F.interpolate(prev_down, scale_factor=2.0, mode='bilinear', align_corners=False)
+        
+        # ✅ Match current feature spatial size
+        prev_down_up = F.interpolate(prev_down_up, size=curr.shape[-2:], mode='bilinear', align_corners=False)
+        
+        # ✅ Concatenate and process
+        x = torch.cat([prev_down_up, curr], dim=1)
         x = self.block(x)
         return x
 
 class UpBlock(nn.Module):
-    def __init__(self, in_ch, skip_ch, out_ch):
+    """
+    Concatenate x and skip, then downsample by 2×.
+    No addition.
+    """
+    def __init__(self, in_ch, skip_ch, out_ch, mode="down"):
         super().__init__()
-        self.conv1 = ConvBNReLU(in_ch + skip_ch, out_ch)
-        self.conv2 = ConvBNReLU(out_ch, out_ch)
-    
+        # After concatenation, total channels = in_ch + skip_ch
+        if mode=="nodown":
+            self.block = nn.Sequential(
+                ConvBNReLU(in_ch + skip_ch, out_ch, stride=1),  # No downsample
+                ConvBNReLU(out_ch, out_ch)
+            )
+        else:
+            self.block = nn.Sequential(
+            ConvBNReLU(in_ch + skip_ch, out_ch, stride=2),  # ↓ Downsample
+            ConvBNReLU(out_ch, out_ch)
+        )
+
     def forward(self, x, skip):
-        x = F.interpolate(x, size=skip.shape[-2:], mode='bilinear', align_corners=False)
-        x = torch.cat([x, skip], dim=1)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        return x
+        # 🔹 Match spatial size
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.interpolate(x, size=skip.shape[-2:], mode='bilinear', align_corners=False)
+
+        # 🔗 Concatenate (no addition)
+        fused = torch.cat([x, skip], dim=1)
+
+        # 🔽 Downsample by 2×
+        out = self.block(fused)
+        return out
 # -------------------------
 # Transformer Encoder (single layer)
 # -------------------------
@@ -516,7 +540,7 @@ class SwinUNetMultiUp(nn.Module):
         # Up path
         self.up4 = UpBlock(d_model, d_model, d_model)
         self.up3 = UpBlock(d_model, d_model, d_model)
-        self.up2 = UpBlock(d_model, d_model, d_model)
+        self.up2 = UpBlock(d_model, d_model, d_model, mode="nodown")
 
         # Final fusion of upsampled features
         self.fusion_proj = ConvBNReLU(3 * d_model, d_model)
@@ -558,26 +582,30 @@ class SwinUNetMultiUp(nn.Module):
                 features[i] = features[i].permute(0, 3, 1, 2).contiguous()
         #print(features[0].shape,features[1].shape,features[2].shape)
         # Feature projection using Unet
-        p2 = self.conv2(features[0])
-        p3 = self.conv3(features[1])
-        p4 = self.conv4(features[2])
+        p2 = self.conv2(features[0]) #60*60
+        p3 = self.conv3(features[1]) #30*30
+        p4 = self.conv4(features[2]) #15*15
+        #print(p2.shape,p3.shape,p4.shape)
         # Down path
-        d2 = p2
-        d3 = self.down3(d2, p3)
-        d4 = self.down4(d3, p4)
+        d2 = p4 
+        d3 = self.down3(d2, p3) ##it should be up 30*30
+        d4 = self.down4(d3, p2) ##it should be up 60*60
+        #print(d2.shape,d3.shape,d4.shape)
         # Bottleneck
         bn = self.bottleneck(d4)
         # Up path
-        up4 = self.up4(bn, d4)
-        up3 = self.up3(up4, d3)
-        up2 = self.up2(up3, d2)
+        up4 = self.up4(bn, d4) ##it should be down 30*30
+        up3 = self.up3(up4, d3) ##it should be down 15*15
+        up2 = self.up2(up3, d2) ##it should be down 15*15
         # Multi-scale upsample fusion
-        up4_up = F.interpolate(up4, size=up2.shape[-2:], mode='bilinear', align_corners=False)
+        H, W = up4.shape[-2:]
+        up4_up = F.interpolate(up4, size=(H // 2, W // 2), mode='bilinear', align_corners=False)
+        up4_up = F.interpolate(up4_up, size=up2.shape[-2:], mode='bilinear', align_corners=False)
         up3_up = F.interpolate(up3, size=up2.shape[-2:], mode='bilinear', align_corners=False)
-        cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W]
+        cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W] should be 15*15
         # Final projection
-        out = self.fusion_proj(cat)
-        print(out.shape)
+        out = self.fusion_proj(cat) ##size should be 15*15
+        #print(out.shape)
         # # Flatten for transformer input
         # B, D, H, W = out.shape
         # memory = out.flatten(2).transpose(1, 2)  # [B, H*W, D==B,N,D]
@@ -643,10 +671,12 @@ class SwinUNetMultiUp(nn.Module):
         # ===== 1️⃣ Flatten encoder features =====
         B, D, H, W = out.shape
         memory = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
-        print(memory.shape)
+        #print(memory.shape)
         #pos_embed = self.position_encoding(memory)
         #print(pos_embed.shape)
+        #print(self.pe_encoder.shape)
         memory = memory + self.pe_encoder
+        #print(memory.shape)
         memory = self.encoder(memory)
 
         # ===== 2️⃣ Query generation =====
