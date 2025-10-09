@@ -706,6 +706,7 @@ class SwinUNetMultiUp(nn.Module):
         new_centers = centers + 0.02 * (init_raw[..., :2] - 0.5)          # small local shift
         new_centers = new_centers.clamp(0.01, 0.99)                       # keep valid range
         new_wh = 0.02 + 0.03 * init_raw[..., 2:]                          # [0.02, 0.05]
+        #print(new_centers.shape,new_wh.shape)
         init_boxes = torch.cat([new_centers, new_wh], dim=-1)             # [B, topk, 4]
 
         # Small Gaussian jitter (only after first 2 epochs, if you track epoch)
