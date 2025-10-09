@@ -48,6 +48,12 @@ class ConditionalDETR(nn.Module):
 
         self.linear_class = nn.Linear(d_model, n_classes)
         self.linear_bbox = nn.Linear(d_model, 4)
+        # Query generation (content + spatial top-k)
+        self.num_content_queries = n_queries//2
+        self.content_queries = nn.Parameter(torch.randn(n_queries//2, d_model))
+        self.spatial_score = nn.Linear(d_model, 1)
+        self.topk_spatial = n_queries//2
+        self.box_init = nn.Linear(d_model, 4)
 
     def forward(self, x):
         tokens = self.backbone(x)["layer4"]
