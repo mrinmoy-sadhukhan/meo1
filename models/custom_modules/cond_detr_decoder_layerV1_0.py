@@ -42,7 +42,7 @@ class ConditionalDecoderLayer(nn.Module):
         ref_points: (batch_size, num_queries, 2) -> (batch_size, num_queries, d_model)
         """
         # Normalize using sigmoid
-        #ref_points = torch.sigmoid(ref_points)  # Normalize to [0,1]
+        ref_points = torch.sigmoid(ref_points)  # Normalize to [0,1]
 
         # Get half the dimension size for each axis..
         half_dim = self.lambda_q.shape[0] // 2
@@ -55,10 +55,10 @@ class ConditionalDecoderLayer(nn.Module):
         pos_y = ref_points[..., 1, None] / dim_t
 
         pos_x = torch.cat(
-            [torch.sin(pos_x), torch.cos(pos_x)], dim=-1
+            [torch.sin(pos_x[:, :, ::2]), torch.cos(pos_x[:, :, 1::2])], dim=-1
         )
         pos_y = torch.cat(
-            [torch.sin(pos_y), torch.cos(pos_y)], dim=-1
+            [torch.sin(pos_y[:, :, ::2]), torch.cos(pos_y[:, :, 1::2])], dim=-1
         )
         print(pos_x.shape,pos_y.shape)
         return torch.cat([pos_x, pos_y], dim=-1)  # (batch_size, num_queries, d_model)
