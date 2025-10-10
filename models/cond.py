@@ -1,10 +1,72 @@
+import timm
 import torch
 from torch import nn
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.ops.misc import FrozenBatchNorm2d
 from einops import rearrange
 from models.custom_modules.cond_detr_decoder_layer import ConditionalDecoderLayer
+import torch.nn.functional as F
+class ConvBNReLU(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=kernel, stride=stride, padding=padding, bias=False)
+        self.bn = nn.BatchNorm2d(out_ch)
+        self.act = nn.ReLU(inplace=True)
+    
+    def forward(self, x):
+        return self.act(self.bn(self.conv(x)))
 
+class DownBlock(nn.Module):
+    """Concat doubled previous downsampled feature + current feature, then downsample"""
+    def __init__(self, prev_ch, curr_ch, out_ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            ConvBNReLU(prev_ch + curr_ch, out_ch, stride=1),
+            ConvBNReLU(out_ch, out_ch)
+        )
+
+    def forward(self, prev_down, curr):
+        # ✅ Double the previous downsampled feature (spatially upsample by 2×)
+        prev_down_up = F.interpolate(prev_down, scale_factor=2.0, mode='bilinear', align_corners=False)
+        
+        # ✅ Match current feature spatial size
+        prev_down_up = F.interpolate(prev_down_up, size=curr.shape[-2:], mode='bilinear', align_corners=False)
+        
+        # ✅ Concatenate and process
+        x = torch.cat([prev_down_up, curr], dim=1)
+        x = self.block(x)
+        return x
+
+class UpBlock(nn.Module):
+    """
+    Concatenate x and skip, then downsample by 2×.
+    No addition.
+    """
+    def __init__(self, in_ch, skip_ch, out_ch, mode="down"):
+        super().__init__()
+        # After concatenation, total channels = in_ch + skip_ch
+        if mode=="nodown":
+            self.block = nn.Sequential(
+                ConvBNReLU(in_ch + skip_ch, out_ch, stride=1),  # No downsample
+                ConvBNReLU(out_ch, out_ch)
+            )
+        else:
+            self.block = nn.Sequential(
+            ConvBNReLU(in_ch + skip_ch, out_ch, stride=2),  # ↓ Downsample
+            ConvBNReLU(out_ch, out_ch)
+        )
+
+    def forward(self, x, skip):
+        # 🔹 Match spatial size
+        if x.shape[-2:] != skip.shape[-2:]:
+            x = F.interpolate(x, size=skip.shape[-2:], mode='bilinear', align_corners=False)
+
+        # 🔗 Concatenate (no addition)
+        fused = torch.cat([x, skip], dim=1)
+
+        # 🔽 Downsample by 2×
+        out = self.block(fused)
+        return out
 
 class ConditionalDETR(nn.Module):
     def __init__(
@@ -19,11 +81,18 @@ class ConditionalDETR(nn.Module):
     ):
         super().__init__()
 
-        self.backbone = create_feature_extractor(
-            torch.hub.load("pytorch/vision:v0.10.0", "resnet50", pretrained=True),
-            return_nodes={"layer4": "layer4"},
-        )
-
+        # self.backbone = create_feature_extractor(
+        #     torch.hub.load("pytorch/vision:v0.10.0", "resnet50", pretrained=True),
+        #     return_nodes={"layer4": "layer4"},
+        # )
+        self.backbone = timm.create_model(
+                "resnet50",
+                pretrained=True,
+                features_only=True,      # only output feature maps
+                out_indices=(2,3,4),   # choose which layers to extract
+                global_pool=""           # disable global pooling
+                )
+        channels = self.backbone.feature_info.channels()
         if use_frozen_bn:
             self.replace_batchnorm(self.backbone)
 
@@ -54,12 +123,64 @@ class ConditionalDETR(nn.Module):
         self.spatial_score = nn.Linear(d_model, 1)
         self.topk_spatial = n_queries//2
         self.box_init = nn.Linear(d_model, 4)
+        self.pool2 = nn.Identity()  # same dimension
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2)  # downsample ×2
+        self.pool4 = nn.AvgPool2d(kernel_size=4, stride=4)  # downsample ×4
+        
+        # Project Swin stages to d_model
+        self.conv2 = nn.Conv2d(channels[0], d_model, kernel_size=1)
+        self.conv3 = nn.Conv2d(channels[1], d_model, kernel_size=1)
+        self.conv4 = nn.Conv2d(channels[2], d_model, kernel_size=1)
 
+        # Down path
+        self.down3 = DownBlock(d_model, d_model, d_model)  # p3 + d2
+        self.down4 = DownBlock(d_model, d_model, d_model)  # p4 + d3
+
+        # Bottleneck
+        self.bottleneck = nn.Sequential(
+            ConvBNReLU(d_model, d_model),
+            ConvBNReLU(d_model, d_model)
+        )
+
+        # Up path
+        self.up4 = UpBlock(d_model, d_model, d_model)
+        self.up3 = UpBlock(d_model, d_model, d_model)
+        self.up2 = UpBlock(d_model, d_model, d_model, mode="nodown")
+
+        # Final fusion of upsampled features
+        self.fusion_proj = ConvBNReLU(3 * d_model, d_model)
     def forward(self, x):
-        tokens = self.backbone(x)["layer4"]
+        #tokens = self.backbone(x)["layer4"]
         #print(tokens.shape)
-        tokens = self.conv1x1(tokens)
-        tokens = rearrange(tokens, "b c h w -> b (h w) c")
+        #tokens = self.conv1x1(tokens)
+        #tokens = rearrange(tokens, "b c h w -> b (h w) c")
+        features = self.backbone(x)
+        for i in range(0, 3): #1 to 4
+            if features[i].shape[1] < features[i].shape[-1]:  # channels last
+                features[i] = features[i].permute(0, 3, 1, 2).contiguous()
+        # Feature projection using Unet
+        p2 = self.conv2(features[0]) #60*60
+        p3 = self.conv3(features[1]) #30*30
+        p4 = self.conv4(features[2]) #15*15
+        # Down path
+        d2 = p4 
+        d3 = self.down3(d2, p3) ##it should be up 30*30
+        d4 = self.down4(d3, p2) ##it should be up 60*60
+        # Bottleneck
+        bn = self.bottleneck(d4)
+        # Up path
+        up4 = self.up4(bn, d4) ##it should be down 30*30
+        up3 = self.up3(up4, d3) ##it should be down 15*15
+        up2 = self.up2(up3, d2) ##it should be down 15*15
+        # Multi-scale upsample fusion
+        H, W = up4.shape[-2:]
+        up4_up = F.interpolate(up4, size=(H // 2, W // 2), mode='bilinear', align_corners=False)
+        up4_up = F.interpolate(up4_up, size=up2.shape[-2:], mode='bilinear', align_corners=False)
+        up3_up = F.interpolate(up3, size=up2.shape[-2:], mode='bilinear', align_corners=False)
+        cat = torch.cat([up4_up, up3_up, up2], dim=1)  # [B, 3*d_model, H, W] should be 15*15
+        # Final projection
+        out = self.fusion_proj(cat) ##size should be 15*15
+        tokens = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
         B,N,D = tokens.shape
         memory = self.transformer_encoder(tokens + self.pe_encoder)
 
