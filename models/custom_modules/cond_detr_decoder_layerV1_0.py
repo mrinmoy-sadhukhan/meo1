@@ -60,7 +60,7 @@ class ConditionalDecoderLayer(nn.Module):
         pos_y = torch.cat(
             [torch.sin(pos_y[:, :, ::2]), torch.cos(pos_y[:, :, 1::2])], dim=-1
         )
-        print(pos_x.shape,pos_y.shape)
+        #print(pos_x.shape,pos_y.shape)
         return torch.cat([pos_x, pos_y], dim=-1)  # (batch_size, num_queries, d_model)
 
     def forward(self, decoder_embed, ref_boxes, memory):
