@@ -4,7 +4,8 @@ from torch import nn
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.ops.misc import FrozenBatchNorm2d
 from einops import rearrange
-from models.custom_modules.cond_detr_decoder_layer import ConditionalDecoderLayer
+#from models.custom_modules.cond_detr_decoder_layer import ConditionalDecoderLayer
+from models.custom_modules.cond_detr_decoder_layerV1_0 import ConditionalDecoderLayer
 import torch.nn.functional as F
 class ConvBNReLU(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1):
@@ -149,6 +150,13 @@ class ConditionalDETR(nn.Module):
 
         # Final fusion of upsampled features
         self.fusion_proj = ConvBNReLU(3 * d_model, d_model)
+        
+        self.content_ref_embed = nn.Embedding(self.num_content_queries, 4)  # (cx, cy, w, h)
+        self.spatial_ref_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 4)
+        )
     def forward(self, x):
         #tokens = self.backbone(x)["layer4"]
         #print(tokens.shape)
@@ -200,17 +208,21 @@ class ConditionalDETR(nn.Module):
         # ===== 3️⃣ Combine content + spatial queries =====
         queries = torch.cat([content_q, spatial_q], dim=1)                # [B, Q_total, D]
 
+        content_ref_boxes = torch.sigmoid(self.content_ref_embed.weight)
+        content_ref_boxes = content_ref_boxes.unsqueeze(0).expand(B, -1, -1)
+        spatial_ref_boxes = torch.sigmoid(self.spatial_ref_head(spatial_q))  # [B, topk, 4]
+        ref_boxes = torch.cat([content_ref_boxes, spatial_ref_boxes], dim=1)  # [B, Q_total, 4]
         
         # Object queries are the same for the first decoder layer as decoder embeddings
         decoder_embeddings = queries
         object_queries = queries
         class_preds, bbox_preds = [], []
         for layer in self.decoder_layers:
-            decoder_embeddings, ref_points = layer(
-                decoder_embeddings, object_queries, memory
+            decoder_embeddings, ref_boxes = layer(
+                decoder_embeddings, ref_boxes, memory
             )
             class_preds.append(self.linear_class(decoder_embeddings))
-            bbox_preds.append(self.linear_bbox(decoder_embeddings) + ref_points)
+            bbox_preds.append(self.linear_bbox(decoder_embeddings) + ref_boxes)
 
         return torch.stack(class_preds, dim=1), torch.stack(bbox_preds, dim=1)
 
