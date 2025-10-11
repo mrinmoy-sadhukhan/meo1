@@ -207,15 +207,16 @@ class ConditionalDETR(nn.Module):
 
         # ===== 3️⃣ Combine content + spatial queries =====
         queries = torch.cat([content_q, spatial_q], dim=1)                # [B, Q_total, D]
-
+        # ====== 😈😎 Reference boxes ======
+        # Content reference boxes: learned embeddings, shared across images
         content_ref_boxes = torch.sigmoid(self.content_ref_embed.weight)
-        content_ref_boxes = content_ref_boxes.unsqueeze(0).expand(B, -1, -1)
+        content_ref_boxes = content_ref_boxes.unsqueeze(0).expand(B, -1, -1) #[B, Qc, 4]
         spatial_ref_boxes = torch.sigmoid(self.spatial_ref_head(spatial_q))  # [B, topk, 4]
         ref_boxes = torch.cat([content_ref_boxes, spatial_ref_boxes], dim=1)  # [B, Q_total, 4]
         
         # Object queries are the same for the first decoder layer as decoder embeddings
         decoder_embeddings = queries
-        object_queries = queries
+        #object_queries = queries
         class_preds, bbox_preds = [], []
         for layer in self.decoder_layers:
             decoder_embeddings, ref_boxes = layer(
