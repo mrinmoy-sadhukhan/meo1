@@ -612,7 +612,7 @@ class DETRBoxVisualizer:
         # Print performance
         self._print_performance_stats(total_frames_processed, total_time, total_inference_time)
         
-        return processed_frames
+        #return processed_frames
 
     def _save_video_results(self, processed_frames, save_dir, fps, start_time, end_time):
         """Save processed video"""
