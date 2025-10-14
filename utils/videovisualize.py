@@ -139,7 +139,6 @@ class DETRBoxVisualizer:
                 xmin, ymin, text, fontsize=7, bbox=dict(facecolor="yellow", alpha=0.5)
             )
 
-    
     def visualize_video_inference_v1_0(
             self,
             model,
@@ -391,8 +390,6 @@ class DETRBoxVisualizer:
             'output_path': output_video_path if processed_frames else None
         }
     
-    
-           
     def _fast_visualize_image(self, frame_rgb, boxes, class_ids, scores, original_size):
         """Fast visualization using OpenCV instead of matplotlib"""
         h, w = original_size
