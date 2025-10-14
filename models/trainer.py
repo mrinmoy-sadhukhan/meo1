@@ -264,7 +264,9 @@ class DETRTrainer:
         # Clear the training history from previous trainings..
         self.hist = []
         self.hist_detailed_losses = []
-
+        # Track minimal loss for checkpointing
+        best_loss = float("inf")
+        best_epoch = -1
         for epoch in range(self.epochs):
             train_loader = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
 
@@ -316,6 +318,21 @@ class DETRTrainer:
 
             self.log_epoch_losses(epoch, np.array(losses), np.array(class_losses),np.array(box_losses), np.array(giou_losses))
             self.save_checkpoint(epoch)
-
+            # ✅ Save "best model" based on minimal loss
+            #avg_loss = np.mean(losses)
+            avg_loss = loss.item()
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                os.makedirs(self.checkpoint_dir, exist_ok=True)
+                ckpt_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch{epoch+1}_best.pth")
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": self.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict()
+                    },
+                    ckpt_path,
+                )
+                print(f"🔥 New best model saved (epoch {epoch+1})")
             torch.cuda.empty_cache()
             import gc; gc.collect()

@@ -212,7 +212,9 @@ class DETRBoxVisualizer:
             axs[ix, 1].set_title("Ground Truth")
 
         plt.show()
-    def visualize_video_inference_v1_0 (self,
+    
+    def visualize_video_inference_v1_0 (
+            self,
             model,
             video_path,
             save_dir,
@@ -338,6 +340,7 @@ class DETRBoxVisualizer:
         clip = ImageSequenceClip(processed_frames, fps=fps)
         clip.write_videofile(output_video_path, codec="libx264")
         print(f"Saved processed segment to: {output_video_path}")
+    
     def visualize_video_inference(
         self,
         model,
