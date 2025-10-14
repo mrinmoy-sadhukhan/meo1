@@ -391,58 +391,8 @@ class DETRBoxVisualizer:
             'output_path': output_video_path if processed_frames else None
         }
     
-    def optimize_model_for_inference(self, model, device, image_size=480):
-        """Optimize model for faster inference"""
-        model.eval()
-        
-        # Use torch.jit.optimize_for_inference
-        if hasattr(torch.jit, 'optimize_for_inference'):
-            try:
-                example_input = torch.randn(1, 3, image_size, image_size).to(device)
-                traced_model = torch.jit.trace(model, example_input)
-                optimized_model = torch.jit.optimize_for_inference(traced_model)
-                print("✅ Model optimized for inference")
-                return optimized_model
-            except Exception as e:
-                print(f"⚠️ Optimization failed: {e}")
-        
-        return model
     
-    def visualize_video_inference_fast_fp16(
-        self,
-        model,
-        video_path,
-        save_dir,
-        image_size=480,
-        batch_size=8,  # Increased batch size
-        nms_threshold=0.3,
-        show_timestamp=True,
-        start_time=0.0,
-        end_time=None,
-        use_fp16=True,  # Add FP16 support
-    ):
-    
-        # Use mixed precision
-        if use_fp16 and self.device.type == "cuda":
-            model = model.half()
-            print("✅ Using FP16 precision")
-        
-        # Your existing code with FP16 support
-        transform = T.Compose([
-            T.ToTensor(),
-            T.Normalize(mean=self.normalization_params[0], std=self.normalization_params[1]),
-            T.Resize((image_size, image_size), antialias=True),
-        ])
-        
-        # Convert to FP16 if enabled
-        if use_fp16 and self.device.type == "cuda":
-            transform = T.Compose([
-                T.ToTensor(),
-                T.Normalize(mean=self.normalization_params[0], std=self.normalization_params[1]),
-                T.Resize((image_size, image_size), antialias=True),
-                T.ConvertImageDtype(torch.float16),  # Convert to FP16
-            ])
-    
+           
     def _fast_visualize_image(self, frame_rgb, boxes, class_ids, scores, original_size):
         """Fast visualization using OpenCV instead of matplotlib"""
         h, w = original_size
@@ -496,8 +446,8 @@ class DETRBoxVisualizer:
 
         # Model optimization
         if use_fp16 and self.device.type == "cuda":
-            model = model.half()
-            dtype = torch.float16
+            #model = model.half()
+            dtype = torch.float32
         else:
             dtype = torch.float32
 
