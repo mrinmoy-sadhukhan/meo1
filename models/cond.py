@@ -105,7 +105,7 @@ class ConditionalDETR(nn.Module):
             nn.TransformerEncoderLayer(
                 d_model, n_heads, 4 * d_model, 0.1, batch_first=True
             ),
-            num_layers=n_layers,
+            num_layers=1, #n_layers
         )
 
         self.queries = nn.Parameter(

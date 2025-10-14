@@ -212,7 +212,132 @@ class DETRBoxVisualizer:
             axs[ix, 1].set_title("Ground Truth")
 
         plt.show()
+    def visualize_video_inference_v1_0 (self,
+            model,
+            video_path,
+            save_dir,
+            image_size=480,
+            batch_size=5,
+            nms_threshold=0.3,
+            show_timestamp=True,  # overlay time text
+            start_time=0.0,        # start (seconds)
+            end_time=None,         # end (seconds)
+        ):
+        # Open video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video: {video_path}")
 
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = total_frames / fps
+        print(f"Total frames: {total_frames}, FPS: {fps}, Duration: {duration:.2f}s")
+
+        # Validate times
+        if start_time < 0 or (end_time and end_time <= start_time):
+            raise ValueError("Invalid start_time or end_time range.")
+
+        # Skip frames before start_time
+        start_frame = int(start_time * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        print(f"Starting processing from {start_time:.2f}s (frame {start_frame})")
+
+        # Compute last frame to process
+        if end_time is not None and end_time < duration:
+            stop_frame = int(end_time * fps)
+            print(f"Ending processing at {end_time:.2f}s (frame {stop_frame})")
+        else:
+            stop_frame = total_frames
+
+        transform = T.Compose([
+            T.ToTensor(),
+            T.Normalize(mean=self.normalization_params[0], std=self.normalization_params[1]),
+            T.Resize((image_size, image_size), antialias=True),
+        ])
+
+        frames, frame_batches, processed_frames = [], [], []
+
+        print(f"Running inference on device: {self.device}")
+
+        while cap.isOpened():
+            current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            if current_frame >= stop_frame:
+                break
+
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Convert frame to RGB PIL
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(frame_rgb)
+            img_tensor = transform(pil_img).unsqueeze(0)
+
+            video_h, video_w, _ = frame.shape
+            frames.append(frame_rgb)
+            frame_batches.append(img_tensor)
+
+            # Run inference batch
+            if len(frame_batches) == batch_size:
+                batch_input = torch.cat(frame_batches, dim=0)
+
+                inference_results = run_inference(
+                    model=model,
+                    device=self.device,
+                    inputs=batch_input,
+                    nms_threshold=nms_threshold,
+                    image_size=image_size,
+                    empty_class_id=self.empty_class_id,
+                )
+
+                for i in range(batch_size):
+                    nms_boxes, nms_probs, nms_classes = inference_results[i]
+                    if nms_boxes.size == 0:
+                        frame_to_save = frames[i]
+                    else:
+                        fig, ax = plt.subplots(figsize=(image_size / 100, image_size / 100), dpi=100)
+                        ax.set_frame_on(False)
+                        ax.set_axis_off()
+                        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                        self._visualize_image(batch_input[i].cpu(), nms_boxes, nms_classes, nms_probs, ax=ax)
+                        fig.canvas.draw()
+                        frame_to_save = np.array(fig.canvas.renderer.buffer_rgba())[:, :, :3]
+                        frame_to_save = cv2.resize(frame_to_save, (video_w, video_h))
+                        plt.close(fig)
+
+                    # Add timestamp overlay
+                    if show_timestamp:
+                        timestamp_sec = current_frame / fps
+                        timestamp_str = f"{int(timestamp_sec//60):02d}:{int(timestamp_sec%60):02d}"
+                        cv2.putText(
+                            frame_to_save,
+                            timestamp_str,
+                            (20, video_h - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1.0,
+                            (255, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                    processed_frames.append(frame_to_save)
+
+                frames, frame_batches = [], []
+
+        cap.release()
+
+        # === Save video only for the selected time range ===
+        os.makedirs(save_dir, exist_ok=True)
+        if end_time:
+            fname = f"processed_{int(start_time)}s_to_{int(end_time)}s.mp4"
+        else:
+            fname = f"processed_from_{int(start_time)}s.mp4"
+
+        output_video_path = os.path.join(save_dir, fname)
+
+        clip = ImageSequenceClip(processed_frames, fps=fps)
+        clip.write_videofile(output_video_path, codec="libx264")
+        print(f"Saved processed segment to: {output_video_path}")
     def visualize_video_inference(
         self,
         model,
