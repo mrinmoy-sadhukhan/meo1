@@ -643,7 +643,7 @@ class DETRBoxVisualizer:
             print(f"🧠 Inference FPS: {inference_fps:.2f}")
             print(f"⏱️  Total time: {total_time:.2f}s")
             print(f"🔍 Inference time: {inference_time:.2f}s ({inference_time/total_time*100:.1f}%)")
-            print(f"📈 Frames processed: {total_frames}")
+            #print(f"📈 Frames processed: {total_frames}")
         else:
             print("❌ No frames were processed")
     
