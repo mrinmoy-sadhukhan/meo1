@@ -5,7 +5,7 @@ from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.ops.misc import FrozenBatchNorm2d
 from einops import rearrange
 #from models.custom_modules.cond_detr_decoder_layer import ConditionalDecoderLayer
-from models.custom_modules.cond_detr_decoder_layerV1_0 import ConditionalDecoderLayer
+from models.custom_modules.cond_detr_decoder_layerV2_0 import ConditionalDecoderLayer
 import torch.nn.functional as F
 class ConvBNReLU(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1):
