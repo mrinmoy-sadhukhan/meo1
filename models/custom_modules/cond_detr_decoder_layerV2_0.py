@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from deformableself import DeformableSelfAttention
+from models.custom_modules.deformableself import DeformableSelfAttention
 
 class ConditionalDecoderLayer(nn.Module):
     def __init__(self, d_model=256, n_heads=8, dropout=0.1):
