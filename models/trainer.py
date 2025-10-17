@@ -6,8 +6,9 @@ import matplotlib.pyplot as plt
 from torch.optim import AdamW
 from tqdm import tqdm
 from models.losses.detr_loss import compute_sample_loss
-
-
+from torch.optim.lr_scheduler import MultiStepLR
+#from torch.optim.lr_scheduler import CosineAnnealingLR
+#scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 class DETRTrainer:
     def __init__(
         self,
@@ -64,7 +65,7 @@ class DETRTrainer:
         self.checkpoint_dir = checkpoint_dir
         self.num_queries = num_queries
         self.empty_class_id = empty_class_id
-
+        
         # History objects to hold training time metrics
         self.hist = []
         self.hist_detailed_losses = []
@@ -95,7 +96,9 @@ class DETRTrainer:
             ],
             weight_decay=weight_decay,
         )
-
+        self.scheduler = MultiStepLR(self.optimizer,
+                            milestones=[int(0.6 * epochs), int(0.8 * epochs)],
+                            gamma=0.1)
         # Log the number of total trainable parameters
         nparams = (
             sum([p.nelement() for p in model.parameters() if p.requires_grad]) / 1e6
@@ -307,12 +310,12 @@ class DETRTrainer:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                 self.optimizer.step()
-
+                self.scheduler.step()
                 losses.append(loss.item())
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
-
+            
             print(f"Batch Loss: {loss.item():.4f}, Class Loss: {loss_class_batch.item():.4f}, "
                 f"BBox Loss: {loss_bbox_batch.item():.4f}, GIoU Loss: {loss_giou_batch.item():.4f}")
 
