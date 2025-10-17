@@ -281,7 +281,7 @@ class DETRTrainer:
                 tgt_bbox = tgt_bbox.to(self.device, non_blocking=True)
                 tgt_mask = tgt_mask.bool().to(self.device, non_blocking=True)
 
-                class_preds, bbox_preds = self.model(input_)
+                class_preds, bbox_preds,_ = self.model(input_)
 
                 loss = torch.tensor(0.0, device=self.device)
                 loss_class_batch = torch.tensor(0.0, device=self.device)
