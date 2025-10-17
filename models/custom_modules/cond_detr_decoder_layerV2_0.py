@@ -1,14 +1,15 @@
 import torch
 from torch import nn
-
+from deformableself import DeformableSelfAttention
 
 class ConditionalDecoderLayer(nn.Module):
     def __init__(self, d_model=256, n_heads=8, dropout=0.1):
         super().__init__()
 
-        self.self_attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=dropout, batch_first=True
-        )
+        #self.self_attn = nn.MultiheadAttention(
+        #    d_model, n_heads, dropout=dropout, batch_first=True
+        #)
+        self.self_attn = DeformableSelfAttention(d_model, n_heads, n_points=7, dropout=dropout)
         self.cross_attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
@@ -67,10 +68,13 @@ class ConditionalDecoderLayer(nn.Module):
         # Add positional context based on ref_boxes
         pos_embed = self.positional_encoding(ref_boxes[..., :2])  # only (cx, cy)
         q = decoder_embed + pos_embed
-        print(q.shape)
+        #print(q.shape)
         # Self-attention
-        self_attn_out = self.self_attn(q, q, decoder_embed)[0]
-        print(self_attn_out.shape)
+        B,D,N=q.shape
+        H=W=int(N**0.5)
+        #self_attn_out = self.self_attn(q, q, decoder_embed)[0]
+        self_attn_out = self.self_attn(q, H, W)
+        #print(self_attn_out.shape)
         decoder_embed = self.norm1(decoder_embed + self.dropout(self_attn_out))
 
         # Cross-attention with encoder memory
