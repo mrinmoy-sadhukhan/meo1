@@ -10,7 +10,7 @@ class DeformableSelfAttention(nn.Module):
     Output: (B, C, H, W)
     """
 
-    def __init__(self, dim, n_heads=5, n_points=4, n_scales=2, offset_scale=0.1, dropout=0.0):
+    def __init__(self, dim, n_heads=5, n_points=4, n_scales=1, offset_scale=1.5, dropout=0.0):
         super().__init__()
         assert dim % n_heads == 0, "dim must be divisible by n_heads"
         self.dim = dim
