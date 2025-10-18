@@ -327,7 +327,7 @@ class DETRTrainer:
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 os.makedirs(self.checkpoint_dir, exist_ok=True)
-                ckpt_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch{epoch+1}_best.pth")
+                ckpt_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch_best.pth")
                 torch.save(
                     {
                         "epoch": epoch,
