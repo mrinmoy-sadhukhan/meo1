@@ -168,7 +168,7 @@ def run_inference(
         raise ValueError("No model or device provided for inference!")
 
     with torch.no_grad():
-        out_cl, out_bbox = model(inputs)
+        out_cl, out_bbox,_ = model(inputs)
 
     # Get the outputs from the last decoder layer..
     out_cl = out_cl[:, -1, :]
