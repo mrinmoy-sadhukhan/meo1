@@ -25,7 +25,7 @@ def run_inferencev1_0(
     inputs = inputs.to(device)
 
     with torch.no_grad():
-        out_cl, out_bbox = model(inputs)
+        out_cl, out_bbox,_ = model(inputs)
 
     # Take outputs from last decoder layer
     out_cl = out_cl[:, -1, :]
