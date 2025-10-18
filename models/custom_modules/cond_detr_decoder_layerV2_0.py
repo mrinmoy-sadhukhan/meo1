@@ -9,7 +9,7 @@ class ConditionalDecoderLayer(nn.Module):
         #self.self_attn = nn.MultiheadAttention(
         #    d_model, n_heads, dropout=dropout, batch_first=True
         #)
-        self.self_attn = DeformableSelfAttention(d_model, n_heads, n_points=7, dropout=dropout)
+        self.self_attn = DeformableSelfAttention(dim=100, n_heads=5,n_points=4) #here dim=100=number of queries
         self.cross_attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
@@ -72,6 +72,7 @@ class ConditionalDecoderLayer(nn.Module):
         # Self-attention
         B,D,N=q.shape
         H=W=int(N**0.5)
+        #print(B,D,H,W)
         #self_attn_out = self.self_attn(q, q, decoder_embed)[0]
         self_attn_out = self.self_attn(q, H, W)
         #print(self_attn_out.shape)

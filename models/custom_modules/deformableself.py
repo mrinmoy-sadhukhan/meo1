@@ -1,92 +1,170 @@
 import torch
-from torch import nn
+import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-
-# -----------------------
-# Deformable Self-Attention
-# -----------------------
 class DeformableSelfAttention(nn.Module):
-    """
-    Self-attention where each query attends only to a small local neighborhood around itself.
-    This is implemented as a deformable-style attention over a sequence reshaped as 2D.
-    """
-    def __init__(self, d_model, n_heads=8, n_points=7, dropout=0.1):
+    def __init__(self, dim, n_heads=8, n_points=4):
         super().__init__()
-        assert d_model % n_heads == 0
-        self.d_model = d_model
+        self.dim = dim
         self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
         self.n_points = n_points
-        self.dropout = nn.Dropout(dropout)
+        self.head_dim = dim // n_heads
 
-        # Linear projections
-        self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
+        # learnable projection layers
+        self.q_proj = nn.Conv2d(dim, dim, 1)
+        self.kv_proj = nn.Conv2d(dim, dim * 2, 1)
+        
+        # predict offsets and attention weights
+        self.offset_proj = nn.Conv2d(dim, 2 * n_heads * n_points, 3, padding=1)
+        self.attn_weight_proj = nn.Conv2d(dim, n_heads * n_points, 3, padding=1)
 
-        # Predict local offsets for deformable attention
-        self.offset_predictor = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, 2 * n_points),  # relative offsets (dx, dy) for n_points
-            nn.Tanh()  # normalized offsets
+        self.out_proj = nn.Conv2d(dim, dim, 1)
+
+    def forward(self, x,H,W):
+        
+        x = rearrange(x, 'b q (h w) -> b q h w', h=H, w=W)
+        B, C, H, W = x.shape
+        q = self.q_proj(x)
+        kv = self.kv_proj(x)
+        k, v = kv.chunk(2, dim=1)
+
+        offsets = self.offset_proj(x)
+        offsets = offsets.view(B, self.n_heads, self.n_points, 2, H, W)
+        
+        attn_weights = self.attn_weight_proj(x)
+        attn_weights = attn_weights.view(B, self.n_heads, self.n_points, H, W)
+        attn_weights = torch.softmax(attn_weights, dim=2)
+
+        # normalized grid for sampling
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, H, device=x.device),
+            torch.linspace(-1, 1, W, device=x.device),
+            indexing='ij'
         )
+        base_grid = torch.stack([grid_x, grid_y], dim=-1)  # (H, W, 2)
 
-    def forward(self, x, H, W):
-        """
-        x: (B, N, d_model)
-        H, W: spatial dimensions (so N = H*W)
-        """
-        B, N, D = x.shape
-        device = x.device
-        n_points = self.n_points
+        outputs = []
+        for h in range(self.n_heads):
+            v_h = v[:, h * self.head_dim:(h + 1) * self.head_dim]
+            q_h = q[:, h * self.head_dim:(h + 1) * self.head_dim]
 
-        # Linear projections
-        q = self.q_proj(x).view(B, N, self.n_heads, self.head_dim).transpose(1, 2)  # (B, heads, N, head_dim)
-        k = self.k_proj(x).view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(x).view(B, N, self.n_heads, self.head_dim).transpose(1, 2)
+            sampled = 0
+            for p in range(self.n_points):
+                # deform the grid
+                offset = offsets[:, h, p].permute(0, 2, 3, 1)  # (B, H, W, 2)
+                grid = base_grid[None] + offset / torch.tensor([W / 2, H / 2], device=x.device)
+                sampled_v = F.grid_sample(v_h, grid, align_corners=True)
+                sampled += attn_weights[:, h, p].unsqueeze(1) * sampled_v
 
-        # Compute offsets for each query
-        offsets = self.offset_predictor(x).view(B, N, n_points, 2)  # (B, N, n_points, 2)
+            outputs.append(sampled)
 
-        # Convert sequence indices to 2D coordinates
-        coords_y = torch.arange(H, device=device).unsqueeze(1).repeat(1, W).flatten()  # (N,)
-        coords_x = torch.arange(W, device=device).repeat(H)  # (N,)
-        coords = torch.stack([coords_x, coords_y], dim=-1).unsqueeze(0).unsqueeze(0).float()  # (1,1,N,2)
-        coords = coords.repeat(B, self.n_heads, 1, 1)  # (B, heads, N,2)
-
-        # Apply offsets (scaled)
-        offsets_scaled = offsets.unsqueeze(1) * (2.0 / max(H, W))  # normalize to [-1,1]
-        sampling_coords = coords.unsqueeze(3) + offsets_scaled.unsqueeze(2)  # (B, heads, N, n_points, 2)
-
-        # Flatten sampling coords
-        sampling_coords_flat = sampling_coords.view(B*self.n_heads, N*n_points, 2)
-
-        # Flatten keys and values per head
-        k_flat = k.transpose(1,2).contiguous().view(B*self.n_heads, N, self.head_dim)
-        v_flat = v.transpose(1,2).contiguous().view(B*self.n_heads, N, self.head_dim)
-
-        # Compute attention scores (q to k at sampled positions)
-        # First, expand q to match n_points
-        q_expanded = q.unsqueeze(3).repeat(1,1,1,n_points,1).view(B*self.n_heads, N*n_points, self.head_dim)
-
-        # Compute attention: cosine similarity could be used, but simple dot-product with nearest neighbor for now
-        # For simplicity, let's use dot-product with K at sampled positions using nearest neighbor approximation
-        # Round sampling_coords_flat to nearest indices
-        idx_x = sampling_coords_flat[...,0].round().clamp(0,W-1).long()
-        idx_y = sampling_coords_flat[...,1].round().clamp(0,H-1).long()
-        idx_flat = idx_y * W + idx_x  # (B*heads, N*n_points)
-        k_sampled = k_flat.gather(1, idx_flat.unsqueeze(-1).expand(-1,-1,self.head_dim))  # (B*heads, N*n_points, head_dim)
-        v_sampled = v_flat.gather(1, idx_flat.unsqueeze(-1).expand(-1,-1,self.head_dim))
-
-        attn_scores = (q_expanded * k_sampled).sum(-1) / (self.head_dim ** 0.5)  # (B*heads, N*n_points)
-        attn_scores = attn_scores.view(B, self.n_heads, N, n_points)
-        attn = F.softmax(attn_scores, dim=-1)
-        attn = self.dropout(attn)
-
-        out_heads = (attn.unsqueeze(-1) * v_sampled.view(B, self.n_heads, N, n_points, self.head_dim)).sum(3)
-        out = out_heads.transpose(1,2).contiguous().view(B, N, D)
+        out = torch.cat(outputs, dim=1)
         out = self.out_proj(out)
+        out = rearrange(x, 'b q h w -> b q (h w)')
         return out
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# from torch import einsum
+# from einops import rearrange
+
+# # Helper functions
+# def create_grid_like(tensor):
+#     """ Creates a grid of normalized points [-1, 1] for the given tensor's height and width """
+#     h, w = tensor.shape[-2], tensor.shape[-1]
+#     device = tensor.device
+    
+#     # Create a meshgrid for h x w
+#     grid_x, grid_y = torch.meshgrid(
+#         torch.linspace(-1, 1, w, device=device),
+#         torch.linspace(-1, 1, h, device=device),
+#     )
+#     grid = torch.stack((grid_x, grid_y), dim=-1)  # Shape: (h, w, 2)
+
+#     return grid
+
+# def normalize_grid(grid):
+#     """ Normalizes grid coordinates to range from [-1, 1] """
+#     b,h,w,c= grid.shape
+#     grid_h, grid_w = grid[..., 0], grid[..., 1]
+
+#     # Normalize the grid to [-1, 1]
+#     grid_h = 2.0 * grid_h / (h - 1) - 1.0
+#     grid_w = 2.0 * grid_w / (w - 1) - 1.0
+
+#     return torch.stack([grid_h, grid_w], dim=-1)
+
+# # Main Deformable Attention Class
+# class DeformableSelfAttention(nn.Module):
+#     def __init__(self, dim, heads=8, dim_head=64, downsample_factor=4, offset_scale=1.0, offset_groups=None):
+#         super().__init__()
+#         inner_dim = heads * dim_head
+#         self.heads = heads
+#         self.scale = dim_head ** -0.5
+#         self.offset_groups = offset_groups if offset_groups else heads
+#         self.downsample_factor = downsample_factor
+
+#         assert (heads % self.offset_groups) == 0, "Heads must be divisible by offset groups"
+
+#         # Convolution layers for generating queries, keys, and values
+#         self.to_q = nn.Conv2d(dim, inner_dim, 1)
+#         self.to_k = nn.Conv2d(dim, inner_dim, 1)
+#         self.to_v = nn.Conv2d(dim, inner_dim, 1)
+
+#         # Offset network to learn the spatial shifts (offsets) for reference points
+#         offset_dim = inner_dim // self.offset_groups
+#         self.offset_network = nn.Sequential(
+#             nn.Conv2d(offset_dim, offset_dim, kernel_size=6, padding=2, stride=downsample_factor, groups=offset_dim),
+#             nn.GELU(),
+#             nn.Conv2d(offset_dim, 2, 1),  # Produces 2D offsets (dx, dy)
+#             nn.Tanh(),  # Limits offsets between [-1, 1]
+#         )
+#         self.offset_scale = nn.Parameter(torch.tensor(offset_scale))
+
+#         # Final output projection layer
+#         self.to_out = nn.Conv2d(inner_dim, dim, 1)
+
+#     def forward(self, x,H,W):
+#         #B, C, H, W = x.shape
+#         x = rearrange(x, 'b q (h w) -> b q h w', h=H, w=W) 
+#         # 1. Compute Queries, Keys, Values
+#         q = self.to_q(x)  # Shape: (B, heads * dim_head, H, W)
+#         k = self.to_k(x)  # Shape: (B, heads * dim_head, H, W)
+#         v = self.to_v(x)  # Shape: (B, heads * dim_head, H, W)
+
+#         # 2. Generate offsets using offset network
+#         grouped_q = rearrange(q, 'b (g c) h w -> (b g) c h w', g=self.offset_groups)  # Shape: (B * offset_groups, C / offset_groups, H, W)
+#         offsets = self.offset_network(grouped_q)  # Shape: (B * offset_groups, 2, h', w')
+
+#         # 3. Create normalized grid and add learned offsets
+#         grid = create_grid_like(offsets)  # Shape: (H', W', 2)
+#         offset_grid = grid + offsets.permute(0, 2, 3, 1)  # Add offsets to reference grid
+#         print(offset_grid.shape)
+#         # 4. Normalize grid for sampling
+#         normalized_grid = normalize_grid(offset_grid)
+
+#         # 5. Sample keys and values using bilinear interpolation
+#         kv_feats = F.grid_sample(
+#             rearrange(x, 'b c h w -> (b g) c h w', g=self.offset_groups),  # Input feature map for sampling
+#             normalized_grid.unsqueeze(1),  # Shape: (B * g, 1, H', W', 2)
+#             mode='bilinear', align_corners=False
+#         )  # Resulting sampled features: Shape: (B * g, c, h', w')
+
+#         # Restore batch and groups
+#         kv_feats = rearrange(kv_feats, '(b g) c h w -> b (g c) h w', b=B)
+
+#         # 6. Compute attention scores between queries and sampled keys
+#         q = rearrange(q, 'b (h d) h1 w1 -> b h (h1 w1) d', h=self.heads)
+#         k = rearrange(kv_feats, 'b (h d) h1 w1 -> b h (h1 w1) d', h=self.heads)
+#         v = rearrange(kv_feats, 'b (h d) h1 w1 -> b h (h1 w1) d', h=self.heads)
+
+#         attn = einsum('b h n d, b h m d -> b h n m', q, k) * self.scale
+#         attn = attn.softmax(dim=-1)
+
+#         # 7. Compute attention-weighted output
+#         out = einsum('b h n m, b h m d -> b h n d', attn, v)
+#         out = rearrange(out, 'b h (h1 w1) d -> b (h d) h1 w1', h1=H, w1=W)
+#         out=self.to_out(out)
+#         out = rearrange(x, 'b q h w -> b q (h w)') 
+#         # 8. Final output projection
+#         return out
