@@ -1,12 +1,13 @@
 import timm
 import torch
-from torch import nn
+from torch import einsum, nn
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.ops.misc import FrozenBatchNorm2d
 from einops import rearrange
 #from models.custom_modules.cond_detr_decoder_layer import ConditionalDecoderLayer
 from models.custom_modules.cond_detr_decoder_layerV2_0 import ConditionalDecoderLayer
 import torch.nn.functional as F
+from einops import rearrange, repeat
 class ConvBNReLU(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1):
         super().__init__()
@@ -69,6 +70,275 @@ class UpBlock(nn.Module):
         out = self.block(fused)
         return out
 
+def exists(val):
+    return val is not None
+
+def default(val, d):
+    return val if exists(val) else d
+
+def divisible_by(numer, denom):
+    return (numer % denom) == 0
+
+# tensor helpers
+
+def create_grid_like(t, dim = 0):
+    h, w, device = *t.shape[-2:], t.device
+
+    grid = torch.stack(torch.meshgrid(
+        torch.arange(w, device = device),
+        torch.arange(h, device = device),
+    indexing = 'xy'), dim = dim)
+
+    grid.requires_grad = False
+    grid = grid.type_as(t)
+    return grid
+
+def normalize_grid(grid, dim = 1, out_dim = -1):
+    # normalizes a grid to range from -1 to 1
+    h, w = grid.shape[-2:]
+    grid_h, grid_w = grid.unbind(dim = dim)
+
+    grid_h = 2.0 * grid_h / max(h - 1, 1) - 1.0
+    grid_w = 2.0 * grid_w / max(w - 1, 1) - 1.0
+
+    return torch.stack((grid_h, grid_w), dim = out_dim)
+
+class Scale(nn.Module):
+    def __init__(self, scale):
+        super().__init__()
+        self.scale = scale
+
+    def forward(self, x):
+        return x * self.scale
+
+# continuous positional bias from SwinV2
+
+class CPB(nn.Module):
+    """ https://arxiv.org/abs/2111.09883v1 """
+
+    def __init__(self, dim, *, heads, offset_groups, depth):
+        super().__init__()
+        self.heads = heads
+        self.offset_groups = offset_groups
+
+        self.mlp = nn.ModuleList([])
+
+        self.mlp.append(nn.Sequential(
+            nn.Linear(2, dim),
+            nn.ReLU()
+        ))
+
+        for _ in range(depth - 1):
+            self.mlp.append(nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.ReLU()
+            ))
+
+        self.mlp.append(nn.Linear(dim, heads // offset_groups))
+
+    def forward(self, grid_q, grid_kv):
+        device, dtype = grid_q.device, grid_kv.dtype
+
+        grid_q = rearrange(grid_q, 'h w c -> 1 (h w) c')
+        grid_kv = rearrange(grid_kv, 'b h w c -> b (h w) c')
+
+        pos = rearrange(grid_q, 'b i c -> b i 1 c') - rearrange(grid_kv, 'b j c -> b 1 j c')
+        bias = torch.sign(pos) * torch.log(pos.abs() + 1)  # log of distance is sign(rel_pos) * log(abs(rel_pos) + 1)
+
+        for layer in self.mlp:
+            bias = layer(bias)
+
+        bias = rearrange(bias, '(b g) i j o -> b (g o) i j', g = self.offset_groups)
+
+        return bias
+
+# main class
+##DeformableEncoderLayer class
+class DeformableLayer(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        dim_head = 64,
+        heads = 8,
+        dropout = 0.,
+        downsample_factor = 4,
+        offset_scale = None,
+        offset_groups = None,
+        offset_kernel_size = 6,
+        group_queries = True,
+        group_key_values = True
+    ):
+        super().__init__()
+        offset_scale = default(offset_scale, downsample_factor)
+        assert offset_kernel_size >= downsample_factor, 'offset kernel size must be greater than or equal to the downsample factor'
+        assert divisible_by(offset_kernel_size - downsample_factor, 2)
+
+        offset_groups = default(offset_groups, heads)
+        assert divisible_by(heads, offset_groups)
+
+        inner_dim = dim_head * heads
+        self.scale = dim_head ** -0.5
+        self.heads = heads
+        self.offset_groups = offset_groups
+
+        offset_dims = inner_dim // offset_groups
+
+        self.downsample_factor = downsample_factor
+
+        self.to_offsets = nn.Sequential(
+            nn.Conv2d(offset_dims, offset_dims, offset_kernel_size, groups = offset_dims, stride = downsample_factor, padding = (offset_kernel_size - downsample_factor) // 2),
+            nn.GELU(),
+            nn.Conv2d(offset_dims, 2, 1, bias = False),
+            nn.Tanh(),
+            Scale(offset_scale)
+        )
+
+        self.rel_pos_bias = CPB(dim // 4, offset_groups = offset_groups, heads = heads, depth = 2)
+
+        self.dropout = nn.Dropout(dropout)
+        self.to_q = nn.Conv2d(dim, inner_dim, 1, groups = offset_groups if group_queries else 1, bias = False)
+        self.to_k = nn.Conv2d(dim, inner_dim, 1, groups = offset_groups if group_key_values else 1, bias = False)
+        self.to_v = nn.Conv2d(dim, inner_dim, 1, groups = offset_groups if group_key_values else 1, bias = False)
+        self.to_out = nn.Conv2d(inner_dim, dim, 1)
+
+    def forward(self, x, return_vgrid = False):
+        """
+        b - batch
+        h - heads
+        x - height
+        y - width
+        d - dimension
+        g - offset groups
+        """
+
+        heads, b, h, w, downsample_factor, device = self.heads, x.shape[0], *x.shape[-2:], self.downsample_factor, x.device
+
+        # queries
+
+        q = self.to_q(x)
+
+        # calculate offsets - offset MLP shared across all groups
+
+        group = lambda t: rearrange(t, 'b (g d) ... -> (b g) d ...', g = self.offset_groups)
+
+        grouped_queries = group(q)
+        offsets = self.to_offsets(grouped_queries)
+
+        # calculate grid + offsets
+
+        grid =create_grid_like(offsets)
+        vgrid = grid + offsets
+
+        vgrid_scaled = normalize_grid(vgrid)
+
+        kv_feats = F.grid_sample(
+            group(x),
+            vgrid_scaled,
+        mode = 'bilinear', padding_mode = 'zeros', align_corners = False)
+
+        kv_feats = rearrange(kv_feats, '(b g) d ... -> b (g d) ...', b = b)
+
+        # derive key / values
+
+        k, v = self.to_k(kv_feats), self.to_v(kv_feats)
+
+        # scale queries
+
+        q = q * self.scale
+
+        # split out heads
+
+        q, k, v = map(lambda t: rearrange(t, 'b (h d) ... -> b h (...) d', h = heads), (q, k, v))
+
+        # query / key similarity
+
+        sim = einsum('b h i d, b h j d -> b h i j', q, k)
+
+        # relative positional bias
+
+        grid = create_grid_like(x)
+        grid_scaled = normalize_grid(grid, dim = 0)
+        rel_pos_bias = self.rel_pos_bias(grid_scaled, vgrid_scaled)
+        sim = sim + rel_pos_bias
+
+        # numerical stability
+
+        sim = sim - sim.amax(dim = -1, keepdim = True).detach()
+
+        # attention
+
+        attn = sim.softmax(dim = -1)
+        attn = self.dropout(attn)
+
+        # aggregate and combine heads
+
+        out = einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
+        out = self.to_out(out)
+
+        if return_vgrid:
+            return out, vgrid
+
+        return out
+
+class DeformableEncoderLayer(nn.Module):
+    def __init__(self, d_model=256, n_heads=8, dim_feedforward=1024, dropout=0.1):
+        super().__init__()
+
+        # ✅ Deformable self-attention replacing standard attention
+        self.self_attn = DeformableLayer(
+            dim=d_model,
+            heads=n_heads,
+            dim_head=d_model // n_heads,
+            dropout=dropout,
+            downsample_factor=4,      # adjust depending on feature size
+            offset_scale=1.0,
+            offset_groups=n_heads // 2  # more groups = more flexible offsets
+        )
+
+        # ✅ Feed-forward network (same as DETR)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        # ✅ Normalization layers
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        # ✅ Dropouts
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # ✅ Activation function
+        self.activation = nn.ReLU(inplace=True)
+
+    def forward(self, src):
+        """
+        src: (B, N, C) — same as transformer encoder input
+        but we reshape it to (B, C, H, W) for 2D deformable attention
+        """
+        B, N, C = src.shape
+        H = W = int(N ** 0.5)  # assume square spatial grid
+
+        # ---- 1. LayerNorm + Reshape ----
+        src2 = self.norm1(src)
+        src2 = src2.transpose(1, 2).reshape(B, C, H, W)  # (B, C, H, W)
+
+        # ---- 2. Deformable Attention ----
+        attn_out = self.self_attn(src2)  # (B, C, H, W)
+
+        # ---- 3. Flatten and Residual ----
+        attn_out = attn_out.flatten(2).transpose(1, 2)  # (B, N, C)
+        src = src + self.dropout1(attn_out)
+
+        # ---- 4. Feed-forward Network ----
+        src2 = self.norm2(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src2))))
+        src = src + self.dropout2(src2)
+
+        return src
+
 class ConditionalDETR(nn.Module):
     def __init__(
         self,
@@ -79,6 +349,7 @@ class ConditionalDETR(nn.Module):
         n_heads=8,
         n_queries=100,
         use_frozen_bn=False,
+        use_deformable=True
     ):
         super().__init__()
 
@@ -101,13 +372,17 @@ class ConditionalDETR(nn.Module):
         self.pe_encoder = nn.Parameter(
             torch.rand((1, n_tokens, d_model)), requires_grad=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model, n_heads, 4 * d_model, 0.1, batch_first=True
-            ),
-            num_layers=n_layers, #n_layers
-        )
-
+        self.use_deformable = use_deformable
+        if use_deformable:
+            self.transformer_encoder = nn.ModuleList([
+            DeformableEncoderLayer(d_model,n_heads,4 * d_model, 0.1) for _ in range(n_layers)
+        ])
+            
+        else:
+            self.transformer_encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
+                num_layers=n_layers
+            )
         self.queries = nn.Parameter(
             torch.rand((1, n_queries, d_model)), requires_grad=True
         )
@@ -190,7 +465,16 @@ class ConditionalDETR(nn.Module):
         out = self.fusion_proj(cat) ##size should be 15*15
         tokens = out.flatten(2).transpose(1, 2)        # [B, H*W, D]
         B,N,D = tokens.shape
-        memory = self.transformer_encoder(tokens + self.pe_encoder)
+        memory_in=tokens+self.pe_encoder
+        if self.use_deformable:
+            #print(N,N**0.5,N**0.5)
+            #memory_in = memory_in.transpose(1, 2)  # [B, D, N]
+            #memory_in = rearrange(memory_in, 'b q (h w) -> b q h w', h=int(N**0.5), w=int(N**0.5))
+            for layer in self.transformer_encoder:
+                memory_in = layer(memory_in)
+            memory = memory_in
+        else:
+            memory = self.transformer_encoder(memory_in)
 
         #object_queries = self.queries.repeat(memory.shape[0], 1, 1) ##original
         # ===== 2️⃣ Query generation =====
