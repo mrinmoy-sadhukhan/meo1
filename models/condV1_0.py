@@ -474,7 +474,7 @@ class ConditionalDETR(nn.Module):
             #print(N,N**0.5,N**0.5)
             #memory_in = memory_in.transpose(1, 2)  # [B, D, N]
             #memory_in = rearrange(memory_in, 'b q (h w) -> b q h w', h=int(N**0.5), w=int(N**0.5))
-            mmeory_in=self.transformer_encoder(memory_in)
+            memory_in=self.transformer_encoder(memory_in) ##wait and watch
             for layer in self.transformer_encoder_:
                 memory_in = layer(memory_in)
             memory = memory_in
