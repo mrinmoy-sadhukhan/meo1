@@ -374,8 +374,12 @@ class ConditionalDETR(nn.Module):
         )
         self.use_deformable = use_deformable
         if use_deformable:
-            self.transformer_encoder = nn.ModuleList([
-            DeformableEncoderLayer(d_model,n_heads,4 * d_model, 0.1) for _ in range(n_layers)
+            self.transformer_encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
+                num_layers=3
+            )
+            self.transformer_encoder_ = nn.ModuleList([
+            DeformableEncoderLayer(d_model,n_heads,4 * d_model, 0.1) for _ in range(3)
         ])
             
         else:
@@ -470,7 +474,8 @@ class ConditionalDETR(nn.Module):
             #print(N,N**0.5,N**0.5)
             #memory_in = memory_in.transpose(1, 2)  # [B, D, N]
             #memory_in = rearrange(memory_in, 'b q (h w) -> b q h w', h=int(N**0.5), w=int(N**0.5))
-            for layer in self.transformer_encoder:
+            mmeory_in=self.transformer_encoder(memory_in)
+            for layer in self.transformer_encoder_:
                 memory_in = layer(memory_in)
             memory = memory_in
         else:
