@@ -8,6 +8,7 @@ from tqdm import tqdm
 from models.losses.detr_loss import compute_sample_loss
 from torch.optim.lr_scheduler import MultiStepLR
 #from torch.optim.lr_scheduler import CosineAnnealingLR
+from timm.scheduler.cosine_lr import CosineLRScheduler
 #scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 class DETRTrainer:
     def __init__(
@@ -20,7 +21,7 @@ class DETRTrainer:
         batch_size: int,
         log_freq: int = 1,
         save_freq: int = 10,
-        weight_decay: float = 1e-4,
+        weight_decay: float = 0.05,#1e-4
         checkpoint_dir: str = "ckpts",
         freeze_backbone: bool = False,
         backbone_lr: float = 1e-5,
@@ -94,11 +95,20 @@ class DETRTrainer:
                 {"params": transformer_params, "lr": transformer_lr},
                 {"params": backbone_params, "lr": backbone_lr},
             ],
-            weight_decay=weight_decay,
+            weight_decay=weight_decay,eps=1e-8,betas=(0.9, 0.999)
         )
-        self.scheduler = MultiStepLR(self.optimizer,
-                            milestones=[int(0.6 * epochs), int(0.8 * epochs)],
-                            gamma=0.1)
+        #self.scheduler = MultiStepLR(self.optimizer, milestones=[int(0.6 * epochs), int(0.8 * epochs)],gamma=0.1)
+        self.scheduler = CosineLRScheduler(
+            self.optimizer,
+            t_initial=self.epochs * len(self.train_loader),
+            lr_min=1e-6,
+            warmup_lr_init=1e-7,
+            warmup_t=int(self.epochs * len(self.train_loader)*0.06),
+            cycle_limit=1,
+            t_in_epochs=True,
+            warmup_prefix=True
+        )
+        
         # Log the number of total trainable parameters
         nparams = (
             sum([p.nelement() for p in model.parameters() if p.requires_grad]) / 1e6
@@ -270,6 +280,7 @@ class DETRTrainer:
         # Track minimal loss for checkpointing
         best_loss = float("inf")
         best_epoch = -1
+        step=0
         for epoch in range(self.epochs):
             train_loader = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
 
@@ -310,11 +321,12 @@ class DETRTrainer:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
                 self.optimizer.step()
-                self.scheduler.step()
+                self.scheduler.step_update(step)
                 losses.append(loss.item())
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
+                step+=1
             
             print(f"Batch Loss: {loss.item():.4f}, Class Loss: {loss_class_batch.item():.4f}, "
                 f"BBox Loss: {loss_bbox_batch.item():.4f}, GIoU Loss: {loss_giou_batch.item():.4f}")

@@ -349,7 +349,7 @@ class ConditionalDETR(nn.Module):
         n_heads=8,
         n_queries=100,
         use_frozen_bn=False,
-        use_deformable=True
+        use_deformable=False
     ):
         super().__init__()
 
@@ -508,6 +508,11 @@ class ConditionalDETR(nn.Module):
         #object_queries = queries
         class_preds, bbox_preds = [], []
         cross_attn_weights = []
+        #decoder_embeddings = object_queries=tgt(target)
+        #memory = src (source)
+        #ref_boxes = ref
+        ##here from feature map (memory)(fixed in all iteration) is maped to the decoder_embedding with the help of reference box 
+        #both decoder_embedding and reference boxes are updated iteratively.
         for layer in self.decoder_layers:
             decoder_embeddings, ref_boxes, cross_attn_weight = layer(
                 decoder_embeddings, ref_boxes, memory
