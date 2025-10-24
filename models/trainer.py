@@ -313,9 +313,9 @@ class DETRTrainer:
                         )
                         sample_loss = 1 * loss_class + 5 * loss_bbox + 2 * loss_giou
                         loss += sample_loss  / num_dec_layers
-                        loss_class_batch += loss_class  / num_dec_layers
-                        loss_bbox_batch += loss_bbox  / num_dec_layers
-                        loss_giou_batch += loss_giou  / num_dec_layers
+                        loss_class_batch += loss_class / self.batch_size / num_dec_layers
+                        loss_bbox_batch += loss_bbox / self.batch_size / num_dec_layers
+                        loss_giou_batch += loss_giou / self.batch_size / num_dec_layers
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
