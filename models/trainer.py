@@ -21,7 +21,7 @@ class DETRTrainer:
         batch_size: int,
         log_freq: int = 1,
         save_freq: int = 10,
-        weight_decay: float = 0.05,#1e-4
+        weight_decay: float = 1e-4, #0.05 for large dataset
         checkpoint_dir: str = "ckpts",
         freeze_backbone: bool = False,
         backbone_lr: float = 1e-5,
@@ -105,7 +105,7 @@ class DETRTrainer:
             warmup_lr_init=1e-7,
             warmup_t=int(self.epochs * len(self.train_loader)*0.06),
             cycle_limit=1,
-            t_in_epochs=True,
+            t_in_epochs=False,
             warmup_prefix=True
         )
         
@@ -319,7 +319,7 @@ class DETRTrainer:
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
+                nn.utils.clip_grad_norm_(self.model.parameters(), 0.5) #0.1
                 self.optimizer.step()
                 self.scheduler.step_update(step)
                 losses.append(loss.item())
