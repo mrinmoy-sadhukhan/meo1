@@ -312,7 +312,7 @@ class DETRTrainer:
                             o_bbox_i, t_bbox_i, o_cl_i, t_cl_i, t_mask_i
                         )
                         sample_loss = 1 * loss_class + 5 * loss_bbox + 2 * loss_giou
-                        loss += sample_loss  / num_dec_layers
+                        loss += sample_loss / self.batch_size / num_dec_layers
                         loss_class_batch += loss_class / self.batch_size / num_dec_layers
                         loss_bbox_batch += loss_bbox / self.batch_size / num_dec_layers
                         loss_giou_batch += loss_giou / self.batch_size / num_dec_layers
