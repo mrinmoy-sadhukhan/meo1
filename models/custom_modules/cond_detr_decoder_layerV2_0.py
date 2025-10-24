@@ -44,7 +44,8 @@ class MSDeformAttn_SingleLevel(nn.Module):
             padding_mask: (N, H*W) or None
         """
         N, Lq, C = query.shape
-        H, W = spatial_shape
+        _,M,_=input_flatten.shape
+        H,W=int(M**0.5),int(M**0.5)
 
         # project input features
         value = self.value_proj(input_flatten)
@@ -82,7 +83,7 @@ class MSDeformAttn_SingleLevel(nn.Module):
         #print(output.shape)
         return self.output_proj(output), attn_weights.detach()
 class ConditionalDecoderLayer(nn.Module):
-    def __init__(self, d_model=256, n_heads=8, dropout=0.1,n_points=4):
+    def __init__(self, d_model=256, n_heads=8, dropout=0.1,n_points=4,group_detr=4):
         super().__init__()
 
         self.self_attn = nn.MultiheadAttention(
@@ -100,7 +101,7 @@ class ConditionalDecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(dropout)
-
+        self.group_detr=group_detr
         # Learnable anchor positions (x,y pairs)
         self.spatial_2d_coords = nn.Linear(d_model, 2)
 
@@ -149,10 +150,23 @@ class ConditionalDecoderLayer(nn.Module):
         q = decoder_embed + pos_embed ##batch,qeries,dim
         #print(f"pos_embed shape: {pos_embed.shape}")
         # Self-attention
+        _,num_queries,_=decoder_embed.shape
         B,D,N=memory.shape
         H=W=int(D**0.5)
-        spatial_shape=(H,W)
-        self_attn_out = self.self_attn(q, q, decoder_embed)[0]
+        spatial_shape = torch.as_tensor([[H, W]], device=memory.device, dtype=torch.long)
+        # --- Grouped Self-Attention (memory-efficient) ---
+        if self.training and num_queries % self.group_detr == 0 and self.group_detr > 1:
+            #print("Using grouped self-attention with group size:", self.group_detr)
+            q_group = torch.cat(q.split(num_queries // self.group_detr, dim=1), dim=0)
+            k_group = torch.cat(q.split(num_queries // self.group_detr, dim=1), dim=0)
+            v_group = torch.cat(decoder_embed.split(num_queries // self.group_detr, dim=1), dim=0)
+
+            self_attn_out = self.self_attn(q_group, k_group, v_group)[0]
+            self_attn_out = torch.cat(self_attn_out.split(B, dim=0), dim=1)
+        else:
+            #print("Using standard self-attention")
+            self_attn_out = self.self_attn(q, q, decoder_embed)[0]
+        
         #print(self_attn_out.shape)
         decoder_embed = self.norm1(decoder_embed + self.dropout(self_attn_out))
 

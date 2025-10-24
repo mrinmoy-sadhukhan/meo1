@@ -373,7 +373,7 @@ class ConditionalDETR(nn.Module):
             torch.rand((1, n_tokens, d_model)), requires_grad=True
         )
         self.use_deformable = use_deformable
-        if use_deformable:
+        if self.use_deformable:
             self.transformer_encoder = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
                 num_layers=3
