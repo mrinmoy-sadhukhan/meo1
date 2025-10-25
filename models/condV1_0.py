@@ -385,7 +385,7 @@ class ConditionalDETR(nn.Module):
         else:
             self.transformer_encoder = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
-                num_layers=n_layers
+                num_layers=n_layers//2
             )
         self.queries = nn.Parameter(
             torch.rand((1, n_queries, d_model)), requires_grad=True
