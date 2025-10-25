@@ -322,7 +322,7 @@ class DETRTrainer:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.5) #0.1
                 self.optimizer.step()
-                self.scheduler.step_update(step)
+                #self.scheduler.step_update(step)
                 losses.append(loss.item())
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
