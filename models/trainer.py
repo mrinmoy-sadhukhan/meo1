@@ -100,11 +100,11 @@ class DETRTrainer:
         #self.scheduler = MultiStepLR(self.optimizer, milestones=[int(0.6 * epochs), int(0.8 * epochs)],gamma=0.1)
         self.scheduler = CosineLRScheduler(
             self.optimizer,
-            t_initial=self.epochs * len(self.train_loader),
+            t_initial=self.epochs * len(self.train_loader)//2,
             lr_min=1e-6,
             warmup_lr_init=1e-7,
             warmup_t=int(self.epochs * len(self.train_loader)*0.06),
-            cycle_limit=1,
+            cycle_limit=2,
             t_in_epochs=False,
             warmup_prefix=True
         )
@@ -180,6 +180,7 @@ class DETRTrainer:
             state = {
                 "model_state_dict": self.model.state_dict(),
                 "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler": self.scheduler.state_dict()
             }
             torch.save(state, ckpt_path)
             
