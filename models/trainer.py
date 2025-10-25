@@ -70,33 +70,80 @@ class DETRTrainer:
         # History objects to hold training time metrics
         self.hist = []
         self.hist_detailed_losses = []
+        # --- Separate parameter groups ---
+        no_decay = ["bias", "norm", "bn", "layernorm", "ln", "layer_norm"]
 
-        # Create the optimizer with different learning rates for backbone/Transformer head and
-        # optionally freeze the backbone during training.
-        backbone_params = [p for n, p in model.named_parameters() if "backbone." in n]
+        backbone_decay, backbone_no_decay = [], []
+        transformer_decay, transformer_no_decay = [], []
 
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+
+            # Detect if parameter belongs to backbone
+            is_backbone = "backbone." in n
+
+            # Detect bias/norm parameters
+            is_no_decay = any(nd in n.lower() for nd in no_decay)
+
+            if is_backbone:
+                if is_no_decay:
+                    backbone_no_decay.append(p)
+                else:
+                    backbone_decay.append(p)
+            else:
+                if is_no_decay:
+                    transformer_no_decay.append(p)
+                else:
+                    transformer_decay.append(p)
+
+        # --- Freeze or unfreeze backbone ---
         if freeze_backbone:
             print("Freezing CNN backbone...")
             for p in model.backbone.parameters():
                 p.requires_grad = False
         else:
-            # This is needed to re-enable the training of the backbone in case a previous
-            # training iteration kept it frozen...
             for p in model.backbone.parameters():
                 p.requires_grad = True
-        print(f"Backbone is trainable: {not freeze_backbone}")
+        print(f"Backbone trainable: {not freeze_backbone}")
 
-        transformer_params = [
-            p for n, p in model.named_parameters() if "backbone." not in n
-        ]
-
+        # --- Optimizer with parameter groups ---
         self.optimizer = AdamW(
             [
-                {"params": transformer_params, "lr": transformer_lr},
-                {"params": backbone_params, "lr": backbone_lr},
+                {"params": transformer_decay, "lr": transformer_lr, "weight_decay": weight_decay},
+                {"params": transformer_no_decay, "lr": transformer_lr, "weight_decay": 0.0},
+                {"params": backbone_decay, "lr": backbone_lr, "weight_decay": weight_decay},
+                {"params": backbone_no_decay, "lr": backbone_lr, "weight_decay": 0.0},
             ],
-            weight_decay=weight_decay,eps=1e-8,betas=(0.9, 0.999)
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
+        # # Create the optimizer with different learning rates for backbone/Transformer head and
+        # # optionally freeze the backbone during training.
+        # backbone_params = [p for n, p in model.named_parameters() if "backbone." in n]
+
+        # if freeze_backbone:
+        #     print("Freezing CNN backbone...")
+        #     for p in model.backbone.parameters():
+        #         p.requires_grad = False
+        # else:
+        #     # This is needed to re-enable the training of the backbone in case a previous
+        #     # training iteration kept it frozen...
+        #     for p in model.backbone.parameters():
+        #         p.requires_grad = True
+        # print(f"Backbone is trainable: {not freeze_backbone}")
+
+        # transformer_params = [
+        #     p for n, p in model.named_parameters() if "backbone." not in n
+        # ]
+
+        # self.optimizer = AdamW(
+        #     [
+        #         {"params": transformer_params, "lr": transformer_lr},
+        #         {"params": backbone_params, "lr": backbone_lr},
+        #     ],
+        #     weight_decay=weight_decay,eps=1e-8,betas=(0.9, 0.999)
+        # )
         #self.scheduler = MultiStepLR(self.optimizer, milestones=[int(0.6 * epochs), int(0.8 * epochs)],gamma=0.1)
         self.scheduler = CosineLRScheduler(
             self.optimizer,
