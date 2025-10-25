@@ -24,8 +24,8 @@ class DETRTrainer:
         weight_decay: float = 1e-4, #0.05 for large dataset
         checkpoint_dir: str = "ckpts",
         freeze_backbone: bool = False,
-        backbone_lr: float = 1e-5,
-        transformer_lr: float = 1e-4,
+        backbone_lr: float = 2e-6, ##1e-5
+        transformer_lr: float = 2e-5, ##1e-4
         num_queries: int = 100,
         empty_class_id: int = 0,
     ):
@@ -100,11 +100,11 @@ class DETRTrainer:
         #self.scheduler = MultiStepLR(self.optimizer, milestones=[int(0.6 * epochs), int(0.8 * epochs)],gamma=0.1)
         self.scheduler = CosineLRScheduler(
             self.optimizer,
-            t_initial=self.epochs * len(self.train_loader)//2,
+            t_initial=self.epochs * len(self.train_loader), #//2
             lr_min=1e-6,
-            warmup_lr_init=1e-7,
+            warmup_lr_init=0.1 * backbone_lr,
             warmup_t=int(self.epochs * len(self.train_loader)*0.06),
-            cycle_limit=2,
+            cycle_limit=1, ##2
             t_in_epochs=False,
             warmup_prefix=True
         )
@@ -322,7 +322,7 @@ class DETRTrainer:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.5) #0.1
                 self.optimizer.step()
-                #self.scheduler.step_update(step)
+                self.scheduler.step_update(step)
                 losses.append(loss.item())
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())

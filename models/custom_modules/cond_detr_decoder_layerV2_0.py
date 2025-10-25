@@ -82,6 +82,20 @@ class MSDeformAttn_SingleLevel(nn.Module):
         output = (sampled * attn_weights).sum(-1).permute(0, 3, 1, 2).reshape(N, Lq, C) ##
         #print(output.shape)
         return self.output_proj(output), attn_weights.detach()
+class MLP(nn.Module):
+    """ Very simple multi-layer perceptron (also called FFN)"""
+
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
+
 class ConditionalDecoderLayer(nn.Module):
     def __init__(self, d_model=256, n_heads=8, dropout=0.1,n_points=4,group_detr=4):
         super().__init__()
@@ -115,7 +129,7 @@ class ConditionalDecoderLayer(nn.Module):
         self.delta_box_head = nn.Sequential(
             nn.Linear(d_model, d_model), nn.ReLU(), nn.Linear(d_model, 4)
         )
-
+        self.learnedposition=MLP(d_model, d_model, d_model, 2)
 
     def positional_encoding(self, ref_points):
         """
@@ -150,7 +164,7 @@ class ConditionalDecoderLayer(nn.Module):
     def forward(self, decoder_embed, ref_boxes, memory):
         # Add positional context based on ref_boxes
         pos_embed = self.positional_encoding(ref_boxes[..., :2])  # only (cx, cy)
-        q = decoder_embed + pos_embed ##batch,qeries,dim
+        q = decoder_embed + self.learnedposition(pos_embed) ##batch,qeries,dim
         #print(f"pos_embed shape: {pos_embed.shape}")
         # Self-attention
         _,num_queries,_=decoder_embed.shape
