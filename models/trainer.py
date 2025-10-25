@@ -350,5 +350,6 @@ class DETRTrainer:
                     ckpt_path,
                 )
                 print(f"🔥 New best model saved (epoch {epoch+1})")
+                print(f"step value: {step}")
             torch.cuda.empty_cache()
             import gc; gc.collect()
