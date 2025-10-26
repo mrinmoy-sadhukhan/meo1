@@ -239,6 +239,7 @@ class DETRTrainer:
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         if load_optimizer and "optimizer_state_dict" in checkpoint:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
 
         print(f"🔁 Loaded checkpoint")
     
