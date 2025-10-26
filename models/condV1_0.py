@@ -392,7 +392,7 @@ class ConditionalDETR(nn.Module):
         )
 
         self.decoder_layers = nn.ModuleList(
-            [ConditionalDecoderLayer(d_model, n_heads) for _ in range(n_layers)]
+            [ConditionalDecoderLayer(d_model, n_heads) for _ in range(n_layers//2)]
         )
 
         self.linear_class = nn.Linear(d_model, n_classes)

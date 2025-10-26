@@ -103,10 +103,10 @@ class ConditionalDecoderLayer(nn.Module):
         self.self_attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
-        self.cross_attn = MSDeformAttn_SingleLevel(d_model, n_heads, n_points)
-        #self.cross_attn = nn.MultiheadAttention(
-        #    d_model, n_heads, dropout=dropout, batch_first=True
-        #)
+        #self.cross_attn = MSDeformAttn_SingleLevel(d_model, n_heads, n_points)
+        self.cross_attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model), nn.ReLU(), nn.Linear(4 * d_model, d_model)
         )
@@ -188,7 +188,7 @@ class ConditionalDecoderLayer(nn.Module):
         decoder_embed = self.norm1(decoder_embed + self.dropout(self_attn_out))
 
         # Cross-attention with encoder memory
-        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, ref_boxes[..., :2], memory, spatial_shape) ##ref_boxes = memory
+        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, memory , memory, spatial_shape) ##ref_boxes = memory #ref_boxes[..., :2]
         decoder_embed = self.norm2(decoder_embed + self.dropout(cross_out))
 
         # Feedforward
