@@ -393,7 +393,7 @@ class DETRTrainer:
                     {
                         "epoch": epoch,
                         "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict()
+                        "optimizer_state_dict": self.optimizer.state_dict(),
                         "scheduler": self.scheduler.state_dict()
                     },
                     ckpt_path,
