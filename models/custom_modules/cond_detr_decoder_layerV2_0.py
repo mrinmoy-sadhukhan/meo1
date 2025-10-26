@@ -188,7 +188,7 @@ class ConditionalDecoderLayer(nn.Module):
         decoder_embed = self.norm1(decoder_embed + self.dropout(self_attn_out))
 
         # Cross-attention with encoder memory
-        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, memory , memory, spatial_shape) ##ref_boxes = memory #ref_boxes[..., :2]
+        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, memory , memory) ##ref_boxes = memory #ref_boxes[..., :2]
         decoder_embed = self.norm2(decoder_embed + self.dropout(cross_out))
 
         # Feedforward
