@@ -370,9 +370,10 @@ class DETRTrainer:
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
                 # Log the latest GIoU batch loss and the total count
-                print(f"GIoU batch loss: {giou_losses[-1]:.6f} (count={len(giou_losses)})")
+                
                 
                 step+=1
+            print(f"(count={len(giou_losses)})")
             self.scheduler.step()
             
 
