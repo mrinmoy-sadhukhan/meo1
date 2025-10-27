@@ -329,7 +329,7 @@ class DETRTrainer:
             train_loader = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
 
             losses, class_losses, box_losses, giou_losses = [], [], [], []
-            print(len(train_loader))
+            #print(len(train_loader))
             for input_, (tgt_cl, tgt_bbox, tgt_mask, _) in train_loader:
                 input_ = input_.to(self.device, non_blocking=True)
                 tgt_cl = tgt_cl.to(self.device, non_blocking=True)
@@ -369,11 +369,8 @@ class DETRTrainer:
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
-                # Log the latest GIoU batch loss and the total count
-                
-                
                 step+=1
-            print(f"(count={len(giou_losses)})")
+            #print(f"(count={len(giou_losses)})")
             self.scheduler.step()
             
 
