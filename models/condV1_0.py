@@ -291,10 +291,11 @@ class DeformableEncoderLayer(nn.Module):
             dim=d_model,
             heads=n_heads,
             dim_head=d_model // n_heads,
-            dropout=dropout,
+            dropout=0.,
             downsample_factor=4,      # adjust depending on feature size
-            offset_scale=1.0,
-            offset_groups=n_heads // 2  # more groups = more flexible offsets
+            offset_scale=4.0,
+            offset_groups=None,  # more groups = more flexible offsets
+            offset_kernel_size = 6,      # offset kernel size
         )
 
         # ✅ Feed-forward network (same as DETR)
@@ -349,7 +350,7 @@ class ConditionalDETR(nn.Module):
         n_heads=8,
         n_queries=100,
         use_frozen_bn=False,
-        use_deformable=False
+        use_deformable=True
     ):
         super().__init__()
 
@@ -374,25 +375,25 @@ class ConditionalDETR(nn.Module):
         )
         self.use_deformable = use_deformable
         if self.use_deformable:
-            self.transformer_encoder = nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
-                num_layers=3
-            )
+            #self.transformer_encoder = nn.TransformerEncoder(
+            #    nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
+            #    num_layers=3
+            #)
             self.transformer_encoder_ = nn.ModuleList([
-            DeformableEncoderLayer(d_model,n_heads,4 * d_model, 0.1) for _ in range(3)
+            DeformableEncoderLayer(d_model,n_heads,4 * d_model, 0.1) for _ in range(n_layers)
         ])
             
         else:
             self.transformer_encoder = nn.TransformerEncoder(
                 nn.TransformerEncoderLayer(d_model, n_heads, 4 * d_model, 0.1, batch_first=True),
-                num_layers=n_layers//2
+                num_layers=n_layers
             )
         self.queries = nn.Parameter(
             torch.rand((1, n_queries, d_model)), requires_grad=True
         )
 
         self.decoder_layers = nn.ModuleList(
-            [ConditionalDecoderLayer(d_model, n_heads) for _ in range(n_layers//2)]
+            [ConditionalDecoderLayer(d_model, n_heads) for _ in range(n_layers)]
         )
 
         self.linear_class = nn.Linear(d_model, n_classes)
@@ -474,7 +475,7 @@ class ConditionalDETR(nn.Module):
             #print(N,N**0.5,N**0.5)
             #memory_in = memory_in.transpose(1, 2)  # [B, D, N]
             #memory_in = rearrange(memory_in, 'b q (h w) -> b q h w', h=int(N**0.5), w=int(N**0.5))
-            memory_in=self.transformer_encoder(memory_in) ##wait and watch
+            #memory_in=self.transformer_encoder(memory_in) ##wait and watch
             for layer in self.transformer_encoder_:
                 memory_in = layer(memory_in)
             memory = memory_in

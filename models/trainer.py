@@ -7,9 +7,57 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from models.losses.detr_loss import compute_sample_loss
 from torch.optim.lr_scheduler import MultiStepLR
-#from torch.optim.lr_scheduler import CosineAnnealingLR
 from timm.scheduler.cosine_lr import CosineLRScheduler
+from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
 #scheduler = CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
+def build_optimizer(model):
+    no_decay = ["bias", "bn", "norm", "layernorm", "ln", "layer_norm"]
+
+    backbone_decay, backbone_no_decay = [], []
+    encoder_decay, encoder_no_decay = [], []
+    decoder_decay, decoder_no_decay = [], []
+    head_decay, head_no_decay = [], []
+
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        # Identify groups
+        if n.startswith("backbone."):
+            group = (backbone_no_decay if any(nd in n.lower() for nd in no_decay) else backbone_decay)
+        elif n.startswith("transformer_encoder_"):
+            group = (encoder_no_decay if any(nd in n.lower() for nd in no_decay) else encoder_decay)
+        elif n.startswith("decoder_layers"):
+            group = (decoder_no_decay if any(nd in n.lower() for nd in no_decay) else decoder_decay)
+        else:
+            group = (head_no_decay if any(nd in n.lower() for nd in no_decay) else head_decay)
+
+        group.append(p)
+
+    optimizer = AdamW(
+        [
+            {"params": backbone_decay, "lr": 1e-5, "weight_decay": 0.05},
+            {"params": backbone_no_decay, "lr": 1e-5, "weight_decay": 0.0},
+            {"params": encoder_decay, "lr": 1e-4, "weight_decay": 0.05},
+            {"params": encoder_no_decay, "lr": 1e-4, "weight_decay": 0.0},
+            {"params": decoder_decay, "lr": 2e-4, "weight_decay": 0.05},
+            {"params": decoder_no_decay, "lr": 2e-4, "weight_decay": 0.0},
+            {"params": head_decay, "lr": 3e-4, "weight_decay": 0.05},
+            {"params": head_no_decay, "lr": 3e-4, "weight_decay": 0.0},
+        ],
+        betas=(0.9, 0.999),
+        eps=1e-8
+    )
+    return optimizer
+
+def build_scheduler(optimizer, total_epochs):
+    warmup_epochs = int(0.1 * total_epochs)   # 10% warmup
+    main_epochs = total_epochs - warmup_epochs
+
+    warmup = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+    cosine = CosineAnnealingLR(optimizer, T_max=main_epochs, eta_min=1e-6)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+    return scheduler
 class DETRTrainer:
     def __init__(
         self,
@@ -70,32 +118,6 @@ class DETRTrainer:
         # History objects to hold training time metrics
         self.hist = []
         self.hist_detailed_losses = []
-        # --- Separate parameter groups ---
-        no_decay = ["bias", "norm", "bn", "layernorm", "ln", "layer_norm"]
-
-        backbone_decay, backbone_no_decay = [], []
-        transformer_decay, transformer_no_decay = [], []
-
-        for n, p in model.named_parameters():
-            if not p.requires_grad:
-                continue
-
-            # Detect if parameter belongs to backbone
-            is_backbone = "backbone." in n
-
-            # Detect bias/norm parameters
-            is_no_decay = any(nd in n.lower() for nd in no_decay)
-
-            if is_backbone:
-                if is_no_decay:
-                    backbone_no_decay.append(p)
-                else:
-                    backbone_decay.append(p)
-            else:
-                if is_no_decay:
-                    transformer_no_decay.append(p)
-                else:
-                    transformer_decay.append(p)
 
         # --- Freeze or unfreeze backbone ---
         if freeze_backbone:
@@ -108,53 +130,21 @@ class DETRTrainer:
         print(f"Backbone trainable: {not freeze_backbone}")
 
         # --- Optimizer with parameter groups ---
-        self.optimizer = AdamW(
-            [
-                {"params": transformer_decay, "lr": transformer_lr, "weight_decay": weight_decay},
-                {"params": transformer_no_decay, "lr": transformer_lr, "weight_decay": 0.0},
-                {"params": backbone_decay, "lr": backbone_lr, "weight_decay": weight_decay},
-                {"params": backbone_no_decay, "lr": backbone_lr, "weight_decay": 0.0},
-            ],
-            betas=(0.9, 0.999),
-            eps=1e-8
-        )
-        # # Create the optimizer with different learning rates for backbone/Transformer head and
-        # # optionally freeze the backbone during training.
-        # backbone_params = [p for n, p in model.named_parameters() if "backbone." in n]
-
-        # if freeze_backbone:
-        #     print("Freezing CNN backbone...")
-        #     for p in model.backbone.parameters():
-        #         p.requires_grad = False
-        # else:
-        #     # This is needed to re-enable the training of the backbone in case a previous
-        #     # training iteration kept it frozen...
-        #     for p in model.backbone.parameters():
-        #         p.requires_grad = True
-        # print(f"Backbone is trainable: {not freeze_backbone}")
-
-        # transformer_params = [
-        #     p for n, p in model.named_parameters() if "backbone." not in n
-        # ]
-
-        # self.optimizer = AdamW(
-        #     [
-        #         {"params": transformer_params, "lr": transformer_lr},
-        #         {"params": backbone_params, "lr": backbone_lr},
-        #     ],
-        #     weight_decay=weight_decay,eps=1e-8,betas=(0.9, 0.999)
-        # )
+        self.optimizer = build_optimizer(model)
+        
+        # --- Learning rate scheduler ---
+        self.scheduler = build_scheduler(self.optimizer, total_epochs=epochs)
         #self.scheduler = MultiStepLR(self.optimizer, milestones=[int(0.6 * epochs), int(0.8 * epochs)],gamma=0.1)
-        self.scheduler = CosineLRScheduler(
-            self.optimizer,
-            t_initial=self.epochs * len(self.train_loader), #//2
-            lr_min=1e-6,
-            warmup_lr_init=0.1 * backbone_lr,
-            warmup_t=int(self.epochs * len(self.train_loader)*0.06),
-            cycle_limit=1, ##2
-            t_in_epochs=False,
-            warmup_prefix=True
-        )
+        #self.scheduler = CosineLRScheduler(
+        #    self.optimizer,
+        #    t_initial=self.epochs * len(self.train_loader), #//2
+        #    lr_min=1e-6,
+        #    warmup_lr_init=0.1 * backbone_lr,
+        #    warmup_t=int(self.epochs * len(self.train_loader)*0.06),
+        #    cycle_limit=1, ##2
+        #    t_in_epochs=False,
+        #    warmup_prefix=True
+        #)
         
         # Log the number of total trainable parameters
         nparams = (
@@ -370,13 +360,12 @@ class DETRTrainer:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.5) #0.1
                 self.optimizer.step()
-                self.scheduler.step_update(step)
                 losses.append(loss.item())
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
                 step+=1
-            
+            self.scheduler.step()
             print(f"Batch Loss: {loss.item():.4f}, Class Loss: {loss_class_batch.item():.4f}, "
                 f"BBox Loss: {loss_bbox_batch.item():.4f}, GIoU Loss: {loss_giou_batch.item():.4f}")
 

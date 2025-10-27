@@ -1,26 +1,159 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from einops import rearrange
+# class MSDeformAttn_SingleLevel(nn.Module):
+#     """
+#     Simplified Deformable Attention for a single feature level.
+#     (Fully PyTorch, slower but functionally identical)
+#     """
+#     def __init__(self, d_model=256, n_heads=8, n_points=4):
+#         super().__init__()
+#         if d_model % n_heads != 0:
+#             raise ValueError("d_model must be divisible by n_heads")
+        
+#         self.d_model = d_model
+#         self.n_heads = n_heads
+#         self.n_points = n_points
+#         self.head_dim = d_model // n_heads
+
+#         # learnable projections
+#         self.sampling_offsets = nn.Linear(d_model, n_heads * n_points * 2)
+#         self.attention_weights = nn.Linear(d_model, n_heads * n_points)
+#         self.value_proj = nn.Linear(d_model, d_model)
+#         self.output_proj = nn.Linear(d_model, d_model)
+#         self.attn_dropout = nn.Dropout(p=0.1)
+#         self._reset_parameters()
+
+#     def _reset_parameters(self):
+#         nn.init.constant_(self.sampling_offsets.weight, 0.)
+#         nn.init.constant_(self.sampling_offsets.bias, 0.)
+#         nn.init.constant_(self.attention_weights.weight, 0.)
+#         nn.init.constant_(self.attention_weights.bias, 0.)
+#         nn.init.xavier_uniform_(self.value_proj.weight)
+#         nn.init.constant_(self.value_proj.bias, 0.)
+#         nn.init.xavier_uniform_(self.output_proj.weight)
+#         nn.init.constant_(self.output_proj.bias, 0.)
+
+#     def forward(self, query, reference_points, input_flatten, spatial_shape, padding_mask=None):
+#         """
+#         Args:
+#             query: (N, Lq, C)
+#             reference_points: (N, Lq, 2), normalized [0, 1]
+#             input_flatten: (N, H*W, C)
+#             spatial_shape: (H, W)
+#             padding_mask: (N, H*W) or None
+#         """
+#         N, Lq, C = query.shape
+#         _,M,_=input_flatten.shape
+#         H,W=int(M**0.5),int(M**0.5)
+
+#         # project input features
+#         value = self.value_proj(input_flatten)
+#         if padding_mask is not None:
+#             value = value.masked_fill(padding_mask[..., None], 0)
+
+#         value = value.view(N, H * W, self.n_heads, self.head_dim).permute(0, 2, 3, 1)
+#         value = value.contiguous().view(N * self.n_heads, self.head_dim, H, W)
+
+#         # offsets and attention weights
+#         offsets = self.sampling_offsets(query).view(N, Lq, self.n_heads, self.n_points, 2)
+#         offsets = 0.1 * torch.tanh(offsets)
+#         attn_weights = self.attention_weights(query).view(N, Lq, self.n_heads, self.n_points)
+#         attn_weights = self.attn_dropout(F.softmax(attn_weights, -1))
+
+#         # reference points normalized [0,1] → [-1,1]
+#         ref_grid = 2 * reference_points[:, :, None, None, :] - 1  # (N, Lq, 1, 1, 2)
+#         sampling_locations = ref_grid + offsets / torch.tensor([W, H], device=query.device)[None, None, None, None, :]
+
+#         # to [-1,1] range for grid_sample
+#         #sampling_grids = sampling_locations * 2 - 1
+#         sampling_grids = sampling_locations.clamp(-1, 1)
+#         sampling_grids = sampling_grids.view(N * self.n_heads, Lq * self.n_points, 1, 2)
+
+#         # sample from feature map
+#         sampled = F.grid_sample(
+#             value, sampling_grids,
+#             mode='bilinear', padding_mode='zeros', align_corners=False
+#         )
+
+#         sampled = sampled.view(N, self.n_heads, self.head_dim, Lq, self.n_points)
+#         attn_weights = attn_weights.permute(0, 2, 1, 3).unsqueeze(2)
+#         # sampled: [N, n_heads, head_dim, Lq, n_points]
+#         # Weighted sum over points
+#         #print(sampled.shape, attn_weights.shape)
+#         output = (sampled * attn_weights).sum(-1).permute(0, 3, 1, 2).reshape(N, Lq, C) ##
+#         #print(output.shape)
+#         return self.output_proj(output), attn_weights.detach()
+class ContinuousPosBias(nn.Module):
+    """
+    Continuous Positional Bias (from SwinV2)
+    Adds geometry-aware bias to attention logits.
+    """
+    def __init__(self, dim, heads, depth=2):
+        super().__init__()
+        self.mlp = nn.ModuleList()
+        self.mlp.append(nn.Sequential(nn.Linear(2, dim), nn.ReLU()))
+        for _ in range(depth - 1):
+            self.mlp.append(nn.Sequential(nn.Linear(dim, dim), nn.ReLU()))
+        self.mlp.append(nn.Linear(dim, heads))
+
+    def forward(self, ref_points, sample_points):
+        """
+        ref_points: (N, Lq, 2)
+        sample_points: (N, Lq, n_points, 2)
+        """
+        # relative position: (N, Lq, n_points, 2)
+        #print(ref_points.shape,sample_points.shape)
+        if sample_points.shape[2] != ref_points.shape[1]:
+            # (B, Lq, n_heads, n_points, 2) → (B, n_heads, Lq, n_points, 2)
+            sample_points = sample_points.permute(0, 2, 1, 3, 4).contiguous()
+        if sample_points.dim() == 4:
+            # (B, Lq, n_points, 2)
+            rel_pos = sample_points - ref_points.unsqueeze(-2)
+        elif sample_points.dim() == 5:
+            # (B, n_heads, Lq, n_points, 2)
+            rel_pos = sample_points - ref_points.unsqueeze(1).unsqueeze(-2)
+        else:
+            raise ValueError(f"Unexpected sample_points shape: {sample_points.shape}")
+        rel_pos = torch.sign(rel_pos) * torch.log(rel_pos.abs() + 1.0)
+
+        bias = rel_pos
+        for layer in self.mlp:
+            bias = layer(bias)
+        # Output: (N, Lq, n_points, heads)
+        #print(bias.shape)
+        bias = bias.permute(0, 4, 2, 3, 1).mean(-1)  # → [B, heads, Lq, n_points]
+        #print(bias.shape)
+        return bias  # (N, Lq, heads, n_points)
+
+
+# ------------------------
+# Main class: Single-level Deformable Attention + CPB
+# ------------------------
 class MSDeformAttn_SingleLevel(nn.Module):
     """
-    Simplified Deformable Attention for a single feature level.
-    (Fully PyTorch, slower but functionally identical)
+    Simplified Deformable Attention + Continuous Positional Bias
+    (PyTorch implementation, functional equivalent to Deformable DETR)
     """
-    def __init__(self, d_model=256, n_heads=8, n_points=4):
+    def __init__(self, d_model=256, n_heads=8, n_points=4, cpb_dim=64):
         super().__init__()
-        if d_model % n_heads != 0:
-            raise ValueError("d_model must be divisible by n_heads")
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         
         self.d_model = d_model
         self.n_heads = n_heads
         self.n_points = n_points
         self.head_dim = d_model // n_heads
 
-        # learnable projections
+        # Learnable projections
         self.sampling_offsets = nn.Linear(d_model, n_heads * n_points * 2)
         self.attention_weights = nn.Linear(d_model, n_heads * n_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(0.1)
+
+        # CPB module
+        self.cpb = ContinuousPosBias(dim=cpb_dim, heads=n_heads, depth=2)
 
         self._reset_parameters()
 
@@ -34,7 +167,7 @@ class MSDeformAttn_SingleLevel(nn.Module):
         nn.init.xavier_uniform_(self.output_proj.weight)
         nn.init.constant_(self.output_proj.bias, 0.)
 
-    def forward(self, query, reference_points, input_flatten, spatial_shape, padding_mask=None):
+    def forward(self, query, reference_points, input_flatten, padding_mask=None):
         """
         Args:
             query: (N, Lq, C)
@@ -47,40 +180,39 @@ class MSDeformAttn_SingleLevel(nn.Module):
         _,M,_=input_flatten.shape
         H,W=int(M**0.5),int(M**0.5)
 
-        # project input features
+        # 1️⃣ Value projection
         value = self.value_proj(input_flatten)
         if padding_mask is not None:
             value = value.masked_fill(padding_mask[..., None], 0)
-
         value = value.view(N, H * W, self.n_heads, self.head_dim).permute(0, 2, 3, 1)
         value = value.contiguous().view(N * self.n_heads, self.head_dim, H, W)
 
-        # offsets and attention weights
+        # 2️⃣ Predict offsets + attention weights
         offsets = self.sampling_offsets(query).view(N, Lq, self.n_heads, self.n_points, 2)
+        offsets = 0.1 * torch.tanh(offsets)
         attn_weights = self.attention_weights(query).view(N, Lq, self.n_heads, self.n_points)
         attn_weights = F.softmax(attn_weights, -1)
-
-        # reference points normalized [0,1] → [-1,1]
-        ref_grid = 2 * reference_points[:, :, None, None, :] - 1  # (N, Lq, 1, 1, 2)
+        
+        # 3️⃣ Compute sampling locations
+        ref_grid = 2 * reference_points[:, :, None, None, :] - 1
         sampling_locations = ref_grid + offsets / torch.tensor([W, H], device=query.device)[None, None, None, None, :]
+        sampling_grids = sampling_locations.clamp(-1, 1).view(N * self.n_heads, Lq * self.n_points, 1, 2)
 
-        # to [-1,1] range for grid_sample
-        sampling_grids = sampling_locations * 2 - 1
-        sampling_grids = sampling_grids.view(N * self.n_heads, Lq * self.n_points, 1, 2)
-
-        # sample from feature map
+        # 4️⃣ Deformable sampling via grid_sample
         sampled = F.grid_sample(
-            value, sampling_grids,
-            mode='bilinear', padding_mode='zeros', align_corners=False
+            value, sampling_grids, mode='bilinear', padding_mode='zeros', align_corners=False
         )
-
         sampled = sampled.view(N, self.n_heads, self.head_dim, Lq, self.n_points)
+
+        # 5️⃣ Apply CPB bias to attention weights
+        bias = self.cpb(reference_points, sampling_locations.squeeze(3))  # (N, Lq, heads, n_points)
+        bias = torch.tanh(bias)  # smooth bias
+        attn_weights = self.attn_dropout(F.softmax(attn_weights + bias.permute(0, 2, 1, 3), -1))
+
+        # 6️⃣ Weighted sum over points
         attn_weights = attn_weights.permute(0, 2, 1, 3).unsqueeze(2)
-        # sampled: [N, n_heads, head_dim, Lq, n_points]
-        # Weighted sum over points
-        #print(sampled.shape, attn_weights.shape)
-        output = (sampled * attn_weights).sum(-1).permute(0, 3, 1, 2).reshape(N, Lq, C) ##
-        #print(output.shape)
+        output = (sampled * attn_weights).sum(-1).permute(0, 3, 1, 2).reshape(N, Lq, C)
+
         return self.output_proj(output), attn_weights.detach()
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
@@ -103,10 +235,10 @@ class ConditionalDecoderLayer(nn.Module):
         self.self_attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
-        #self.cross_attn = MSDeformAttn_SingleLevel(d_model, n_heads, n_points)
-        self.cross_attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=dropout, batch_first=True
-        )
+        self.cross_attn = MSDeformAttn_SingleLevel(d_model, n_heads, n_points)
+        #self.cross_attn = nn.MultiheadAttention(
+        #    d_model, n_heads, dropout=dropout, batch_first=True
+        #)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model), nn.ReLU(), nn.Linear(4 * d_model, d_model)
         )
@@ -188,7 +320,7 @@ class ConditionalDecoderLayer(nn.Module):
         decoder_embed = self.norm1(decoder_embed + self.dropout(self_attn_out))
 
         # Cross-attention with encoder memory
-        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, memory , memory) ##ref_boxes = memory #ref_boxes[..., :2]
+        cross_out, cross_out_attain = self.cross_attn(decoder_embed + pos_embed, ref_boxes[..., :2] , memory) ##ref_boxes = memory #ref_boxes[..., :2]
         decoder_embed = self.norm2(decoder_embed + self.dropout(cross_out))
 
         # Feedforward
