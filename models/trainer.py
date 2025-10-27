@@ -193,17 +193,22 @@ class DETRTrainer:
             box_losses(torch.Tensor): The tensor holding the bounding box L1 losses objects (per-batch)
             giou_losses(torch.Tensor): The tensor holding the GIoU objects (per-batch)
         """
-        if (epoch + 1) % self.log_freq == 0:
-            loss_avg = losses[-self.num_train_batches :].mean().item()
-            epoch_loss_class = class_losses[-self.num_train_batches :].mean().item()
-            epoch_loss_bbox = box_losses[-self.num_train_batches :].mean().item()
-            epoch_loss_giou = giou_losses[-self.num_train_batches :].mean().item()
+        # Compute mean values for this epoch
+        loss_avg = losses.mean().item() if hasattr(losses, 'mean') else float(np.mean(losses))
+        epoch_loss_class = class_losses.mean().item() if hasattr(class_losses, 'mean') else float(np.mean(class_losses))
+        epoch_loss_bbox = box_losses.mean().item() if hasattr(box_losses, 'mean') else float(np.mean(box_losses))
+        epoch_loss_giou = giou_losses.mean().item() if hasattr(giou_losses, 'mean') else float(np.mean(giou_losses))
 
+        # Log at specific frequency
+        if (epoch + 1) % self.log_freq == 0:
             print(f"Epoch: {epoch+1}/{self.epochs}, DETR Loss: {loss_avg:.4f}")
             print(
-                f"→ Class Loss: {epoch_loss_class:.4f}, BBox Loss: {epoch_loss_bbox:.4f}, GIoU Loss: {epoch_loss_giou:.4f}"
+                f"→ Class Loss: {epoch_loss_class:.4f}, "
+                f"BBox Loss: {epoch_loss_bbox:.4f}, "
+                f"GIoU Loss: {epoch_loss_giou:.4f}"
             )
 
+            # Store loss values
             self.hist.append(loss_avg)
             self.hist_detailed_losses.append(
                 (epoch_loss_class, epoch_loss_bbox, epoch_loss_giou)
@@ -308,10 +313,10 @@ class DETRTrainer:
             f"Starting training for {self.epochs} epochs... Using device : {self.device}"
         )
 
-        losses = torch.tensor([], device=self.device)
-        class_losses = torch.tensor([], device=self.device)
-        box_losses = torch.tensor([], device=self.device)
-        giou_losses = torch.tensor([], device=self.device)
+        #losses = torch.tensor([], device=self.device)
+        #class_losses = torch.tensor([], device=self.device)
+        #box_losses = torch.tensor([], device=self.device)
+        #giou_losses = torch.tensor([], device=self.device)
 
         # Clear the training history from previous trainings..
         self.hist = []
@@ -366,8 +371,7 @@ class DETRTrainer:
                 giou_losses.append(loss_giou_batch.item())
                 step+=1
             self.scheduler.step()
-            print(f"Batch Loss: {loss.item():.4f}, Class Loss: {loss_class_batch.item():.4f}, "
-                f"BBox Loss: {loss_bbox_batch.item():.4f}, GIoU Loss: {loss_giou_batch.item():.4f}")
+            
 
             self.log_epoch_losses(epoch, np.array(losses), np.array(class_losses),np.array(box_losses), np.array(giou_losses))
             self.save_checkpoint(epoch)
