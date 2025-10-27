@@ -198,15 +198,15 @@ class DETRTrainer:
         epoch_loss_class = class_losses.mean().item() if hasattr(class_losses, 'mean') else float(np.mean(class_losses))
         epoch_loss_bbox = box_losses.mean().item() if hasattr(box_losses, 'mean') else float(np.mean(box_losses))
         epoch_loss_giou = giou_losses.mean().item() if hasattr(giou_losses, 'mean') else float(np.mean(giou_losses))
-
-        # Log at specific frequency
-        if (epoch + 1) % self.log_freq == 0:
-            print(f"Epoch: {epoch+1}/{self.epochs}, DETR Loss: {loss_avg:.4f}")
-            print(
+        print(f"Epoch: {epoch+1}/{self.epochs}, DETR Loss: {loss_avg:.4f}")
+        print(
                 f"→ Class Loss: {epoch_loss_class:.4f}, "
                 f"BBox Loss: {epoch_loss_bbox:.4f}, "
                 f"GIoU Loss: {epoch_loss_giou:.4f}"
             )
+        # Log at specific frequency
+        if (epoch + 1) % self.log_freq == 0:
+            
 
             # Store loss values
             self.hist.append(loss_avg)
