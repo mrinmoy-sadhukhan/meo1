@@ -329,7 +329,7 @@ class DETRTrainer:
             train_loader = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
 
             losses, class_losses, box_losses, giou_losses = [], [], [], []
-
+            print(len(train_loader))
             for input_, (tgt_cl, tgt_bbox, tgt_mask, _) in train_loader:
                 input_ = input_.to(self.device, non_blocking=True)
                 tgt_cl = tgt_cl.to(self.device, non_blocking=True)
@@ -369,14 +369,17 @@ class DETRTrainer:
                 class_losses.append(loss_class_batch.item())
                 box_losses.append(loss_bbox_batch.item())
                 giou_losses.append(loss_giou_batch.item())
+                # Log the latest GIoU batch loss and the total count
+                print(f"GIoU batch loss: {giou_losses[-1]:.6f} (count={len(giou_losses)})")
+                
                 step+=1
             self.scheduler.step()
             
 
             self.log_epoch_losses(epoch, np.array(losses), np.array(class_losses),np.array(box_losses), np.array(giou_losses))
             self.save_checkpoint(epoch)
-            # ✅ Save "best model" based on minimal loss
-            #avg_loss = np.mean(losses)
+            # Use mean epoch loss instead of last batch loss for best-model selection
+            avg_loss = float(np.mean(losses)) if len(losses) > 0 else float(loss.item())
             avg_loss = loss.item()
             if avg_loss < best_loss:
                 best_loss = avg_loss
