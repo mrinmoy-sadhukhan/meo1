@@ -358,7 +358,7 @@ class ConditionalDETR(nn.Module):
         #     return_nodes={"layer4": "layer4"},
         # )
         self.backbone = timm.create_model(
-                "resnet50",
+                "resnet101",
                 pretrained=True,
                 features_only=True,      # only output feature maps
                 out_indices=(2,3,4),   # choose which layers to extract
