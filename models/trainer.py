@@ -378,7 +378,6 @@ class DETRTrainer:
             self.save_checkpoint(epoch)
             # Use mean epoch loss instead of last batch loss for best-model selection
             avg_loss = float(np.mean(losses)) if len(losses) > 0 else float(loss.item())
-            avg_loss = loss.item()
             if avg_loss < best_loss:
                 best_loss = avg_loss
                 os.makedirs(self.checkpoint_dir, exist_ok=True)
