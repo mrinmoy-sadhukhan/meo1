@@ -383,6 +383,7 @@ class DETRTrainer:
                 best_loss = avg_loss
                 os.makedirs(self.checkpoint_dir, exist_ok=True)
                 ckpt_path = os.path.join(self.checkpoint_dir, f"checkpoint_epoch_best.pth")
+                print(f"Best loss improved to {best_loss:.4f}, saving model...")
                 torch.save(
                     {
                         "epoch": epoch,
